@@ -1,0 +1,71 @@
+# ============================================================
+# BOTATO — STM32CubeIDE / STM32CubeMX .gitignore
+# ============================================================
+
+# ---- Build output ----
+Debug/
+Release/
+build/
+cmake-build-*/
+
+# ---- Compiled object / binary files ----
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.su
+*.cyclo
+*.lst
+
+# ---- STM32CubeIDE / Eclipse workspace metadata ----
+.metadata/
+.recommenders/
+.settings/
+RemoteSystemsTempFiles/
+
+# ---- STM32CubeMX generated backups ----
+# CubeMX creates timestamped backup folders on every "Generate Code"
+Backup/
+*.ioc.bak
+*_Conf_*.txt
+
+# ---- STM32CubeIDE launch configs (user-specific debug configs) ----
+# Uncomment the next line if you don't want to share debug configs with
+# teammates. Leave commented if you want everyone to get the same
+# ST-Link debug setup out of the box.
+# *.launch
+
+# ---- IDE / editor junk ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- OS-generated files ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---- Log files ----
+*.log
+
+# ---- Python (if any scripts/tools are added later) ----
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ---- Keep these tracked (do NOT ignore) ----
+# .ioc file            -> hardware config, must be tracked
+# .project / .cproject -> STM32CubeIDE project definition, must be tracked
+# Core/                -> all source, must be tracked
+# Drivers/              -> HAL/CMSIS, must be tracked
+# PINOUT.md / DECISIONS.md / CLAUDE.md -> must be tracked
