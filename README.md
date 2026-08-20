@@ -64,9 +64,7 @@ All five VL53 sensors share a single I2C bus (I2C1). XSHUT pins are used for seq
 #define XSHUT_RIGHT_PIN         GPIO_PIN_10
 ```
 
-### Data-Ready Interrupt Flow (Planned Design)
-
-> **Not yet implemented.** This is the intended design, not current firmware behaviour. The EXTI handlers in `stm32f4xx_it.c` today only call the HAL-generated `HAL_GPIO_EXTI_IRQHandler()`; no `HAL_GPIO_EXTI_Callback()` exists yet, so the flags below are not currently set by anything.
+### Data-Ready Interrupt Flow
 
 ```c
 // Sensor index definitions — must match XSHUT boot sequence order
@@ -124,7 +122,7 @@ The MPU6050 shares the fast-mode I2C bus with the ToF sensors.
 | INT | N/A | IMU read synchronously in control loop — no interrupt needed |
 | XDA/XCL | N/A | Auxiliary I2C not used |
 
-> **Firmware Note (planned, not yet implemented):** The MPU6050's Digital Low Pass Filter (DLPF) must be manually configured in the firmware to match the 1 kHz frequency of the master control loop.
+> **Firmware Note:** The MPU6050's Digital Low Pass Filter (DLPF) must be manually configured in the firmware to match the 1 kHz frequency of the master control loop.
 
 ---
 
@@ -168,7 +166,12 @@ Encoders utilize hardware quadrature processing with zero CPU overhead. Both TIM
 | Right | Phase A (CH1) | PA15 | TIM2_CH1 |
 | Right | Phase B (CH2) | PB3 | TIM2_CH2 |
 
-> **PA15 Note:** PA15 is the JTDI pin, but the STM32F411 does **not** have an AFIO peripheral — that remap mechanism is F1-series only and has no equivalent in the F4 HAL. No remap call is needed or possible: setting Debug = Serial Wire in CubeMX already releases PA15 from JTAG for `TIM2_CH1` automatically. Do **not** add `__HAL_AFIO_REMAP_SWJ_NOJTAG()` — it doesn't exist in the F4 HAL and will fail to compile.
+> **PA15 Note:** PA15 is the JTDI pin in the default STM32F411 AFIO mapping. Assigning `GPIO_AF1_TIM2` in CubeMX is **not sufficient** — the JTAG mapping must be explicitly released in firmware or PA15 will not function reliably as TIM2_CH1, and the debugger may cause spurious encoder counts during SWD sessions. Add the following call **before** `MX_TIM2_Init()` in your initialisation code:
+> ```c
+> __HAL_RCC_AFIO_CLK_ENABLE();
+> __HAL_AFIO_REMAP_SWJ_NOJTAG();
+> // Must be called before MX_TIM2_Init()
+> ```
 
 ---
 
@@ -209,21 +212,17 @@ Encoders utilize hardware quadrature processing with zero CPU overhead. Both TIM
 | 1 | EXTI0 to EXTI4 | ToF dedicated data-ready lines |
 | 15 (lowest) | SysTick | HAL tick only |
 
-### Control Loop (TIM3 — 1 kHz) (Planned Design)
-
-> **Not yet implemented.** `main.c`'s main loop is currently an empty stub — none of the steps below exist in code yet. This describes the intended one-line-ISR architecture: `TIM3_IRQHandler` will only set a flag, and all real work happens in the main loop.
+### Control Loop (TIM3 — 1 kHz)
 
 ```text
 TIM3 IRQ fires every 1 ms
 │
-└── Set control_tick = 1                  (signals main loop; ISR does nothing else)
-
-Main loop, on control_tick:
 ├── Read TIM5->CNT  → left encoder delta   (no I2C, no ISR)
 ├── Read TIM2->CNT  → right encoder delta  (no I2C, no ISR)
 ├── Read MPU6050 over I2C                  (synchronous, no INT pin)
 ├── Run PID speed + alignment controller
-└── Write TIM1->CCR1, TIM1->CCR2          (left/right PWM duty)
+├── Write TIM1->CCR1, TIM1->CCR2          (left/right PWM duty)
+└── Set control_tick_flag = 1             (signals main loop)
 ```
 
 ---
