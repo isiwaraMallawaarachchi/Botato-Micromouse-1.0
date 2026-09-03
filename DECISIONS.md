@@ -350,3 +350,194 @@ AI-driven commits wholesale.
 *This document should be updated whenever a new architectural decision is
 made or an old one is revised — keep it as the single source of truth for
 project reasoning.*
+
+---
+
+## 15. Motor direction polarity — inverted from TB6612 textbook mapping
+
+**Decision:** Motor direction logic uses `IN1=LOW, IN2=HIGH` for physical
+forward, and `IN1=HIGH, IN2=LOW` for physical reverse — the OPPOSITE of
+the textbook TB6612FNG truth table (which states `IN1=HIGH,IN2=LOW` =
+forward).
+
+**Why:** Confirmed via physical motor spin test — both the left and
+right motor spun backward when driven with the textbook mapping. Since
+both motors showed the identical inverted behavior, this is not a
+per-motor wiring fault; it reflects how this board's motor leads are
+physically connected to the TB6612's M1/M2 outputs. No rewiring was
+done or is needed — this is purely a firmware-level polarity convention.
+
+**Action required:** Any future motor driver code (the real `motor.c`
+module under `Core/App/`) MUST use this inverted mapping, not the
+textbook one. If direction ever seems backward again after further
+hardware changes (e.g. replacing a motor), re-verify with the
+`Motor_Spin_Test` module before assuming the polarity constant needs to
+change again — it may instead indicate a newly reversed motor lead on
+just the replaced unit, which should be handled per-motor rather than
+by flipping the global convention.
+
+**Reference implementation:** See `Core/App/tests/Motor_spin_test/motor_test.c`,
+function `SetMotorDuty()`, for the exact working polarity.
+
+---
+
+## 16. Split I2C: ToF sensors on I2C1, IMU on a dedicated I2C2
+
+**Decision:** The MPU6050 was moved off the shared bus onto its own I2C2
+peripheral. Final configuration:
+
+| Bus | SCL | SDA | Devices |
+|---|---|---|---|
+| I2C1 | PB6 | PB7 | 5× ToF sensors |
+| I2C2 | PB10 | PB9 (AF9) | MPU6050 only |
+
+XSHUT_RIGHT moved from PB10 to PB8 to free PB10 for I2C2_SCL.
+
+**Why — the root cause:** every VL53L0X breakout board carries its own
+10 kΩ pull-up resistors on SCL and SDA. Five boards in parallel gave
+roughly 2 kΩ; measured on the assembled bus it was ~1.5 kΩ. At that
+resistance a device pulling the line low must sink well over the 3 mA
+the I2C specification allows. The MPU6050 could not pull the line low
+enough to register a valid logic 0, so its address was never
+acknowledged — `imu_fail_step = 1`, failing at the very first
+`HAL_I2C_IsDeviceReady()` call.
+
+This is called **excessive I2C bus loading** (or the *parallel pull-up
+problem*). The failure mode is a **V_OL violation** — the device cannot
+meet its output-low voltage against excessive pull-up current.
+
+**Why it appeared intermittent:** the bus sat right at the threshold.
+Temperature, which sensors happened to be connected, supply variation,
+and part tolerance each shifted the balance slightly, so the same setup
+worked on some power-ups and not others. Empirically the IMU worked
+above roughly 2.5 kΩ and failed below it.
+
+**Debugging path that led here (worth not repeating):** the symptom was
+first blamed on a defective ToF module, then on interrupted debug
+sessions wedging the bus, then on EXTI storms starving SysTick and
+corrupting `HAL_GetTick()` timeouts. Fixes were attempted for each —
+XSHUT masking, EXTI masking during IMU init, bus-recovery retry loops.
+None worked, because none addressed the actual DC loading problem.
+
+**Alternatives rejected:**
+- *Remove pull-ups from four ToF boards* — they are part of an integrated
+  resistor network that also serves XSHUT and GPIO1; removing it would
+  break those functions.
+- *TCA9548A I2C multiplexer* — would work and would also eliminate XSHUT
+  sequencing entirely, but adds a module, wiring, and per-read channel
+  switching latency.
+- *Software (bit-banged) I2C on PB6/PB7* — no peripheral conflicts, but
+  rejected in favour of a real hardware peripheral.
+- *I2C2 on PB10/PB3* — PB3 is the right encoder's TIM2_CH2. Would have
+  forced the right encoder onto 16-bit TIM4, losing the no-overflow
+  guarantee from decision #4.
+- *I2C3 on PA8* — PA8 is left motor PWM (TIM1_CH1), which has no
+  alternate pin on this package.
+
+**The AF9 trap:** PB9 maps to I2C1_SDA at AF4 but I2C2_SDA at **AF9**.
+Some STM32CubeMX versions generate the wrong AF value when I2C pins are
+moved off their defaults (fixed in CubeMX 6.7.0). If PB9 is set to AF4
+under I2C2, the pin stays internally attached to I2C1 and the bus fails
+silently with no error. Always verify `GPIO_AF9_I2C2` in
+`HAL_I2C_MspInit` in `Core/Src/i2c.c` after regenerating.
+
+**Consequence for future work:** if another I2C sensor is ever added,
+check the combined pull-up resistance on that bus before assuming it
+will work. This failure cost significant debugging time and is easy to
+reintroduce.
+
+---
+
+## 17. Test suite structure — one module per subsystem
+
+**Decision:** All hardware test code lives in a flat `Core/App/tests/`
+directory, one `.c`/`.h` pair per subsystem, selected by a `#define`
+switch at the top of `main.c`.
+
+```
+Core/App/
+├── tof.c / tof.h              <- production VL53L0X driver
+└── tests/
+    ├── test_i2c.c   / .h      <- bus recovery + scan, both buses
+    ├── test_tof.c   / .h      <- addressing, coexistence, distance
+    ├── test_imu.c   / .h      <- MPU6050 presence, yaw
+    ├── test_motor.c / .h      <- both motors, PWM + direction
+    └── test_encoder.c / .h    <- both encoders, counts + delta
+```
+
+Select a test by uncommenting one line in `main.c`:
+```c
+//#define RUN_TEST_I2C
+//#define RUN_TEST_TOF
+//#define RUN_TEST_IMU
+//#define RUN_TEST_MOTOR
+#define RUN_TEST_ENCODER
+```
+
+**Why flat rather than a folder per test:** each subfolder needs its own
+include path added manually in CubeIDE, which becomes tedious friction
+every time a test is added. One folder, one include path.
+
+**Why unselected tests cost nothing:** the build uses
+`-ffunction-sections -fdata-sections` with `--gc-sections` at link time,
+so functions nothing references are discarded. Measured with all five
+tests compiled in: 13072 bytes flash (2.5% of 512 KB), 1980 bytes BSS
+(1.5% of 128 KB).
+
+**Bus recovery is shared:** `I2C1_BusRecover()` and `I2C2_BusRecover()`
+live in `test_i2c.c` and are called by the other test modules rather
+than duplicated. They bit-bang up to 9 SCL pulses to free a device
+holding SDA low after an interrupted debug session — a reflash alone
+does not clear this, since it doesn't reset external peripherals.
+
+---
+
+## 18. Encoder direction — right encoder negated in software
+
+**Decision:** The right encoder's count and delta are negated in
+firmware so both wheels report positive values when the robot moves
+forward.
+
+**Why:** the two encoders are physically mirrored on the chassis, so the
+wheels turn in opposite directions during forward motion. Combined with
+how each encoder's A/B phases are wired, the right encoder counts down
+where the left counts up.
+
+**Implementation** (in `test_encoder.c`, carry into the production
+`encoder.c`):
+```c
+enc_right_count = -(right - (int32_t)ENC_START_VALUE);
+enc_right_delta = -(right - prev_right);
+```
+
+Both must be negated together, or count and delta disagree on direction.
+
+**Also note:** both encoder counters start at `0x80000000` (mid-range)
+rather than 0, so turning backwards reads as a small negative number
+instead of wrapping to ~4 billion. The displayed count subtracts this
+offset so it reads from 0.
+
+**Alternative not taken:** swapping TIM2_CH1/CH2 in CubeMX, or swapping
+the two physical phase wires. Either would fix it at the source, but the
+software negation avoids disturbing a verified-working `.ioc`.
+
+---
+
+## 19. Hardware verification status
+
+As of the last test session:
+
+| Subsystem | Status |
+|---|---|
+| I2C1 bus + 5× ToF | ✅ Verified — addressing, coexistence, live distance |
+| I2C2 bus + MPU6050 | ✅ Verified working when isolated from ToF loading |
+| Encoders (both) | ✅ Verified — counts, direction, delta |
+| Motors (both) | ✅ Verified — both directions, polarity corrected |
+| Buttons | ❌ Not yet tested |
+| Combined operation | ❌ Not yet tested with motors running |
+
+**Still untested and worth flagging:** all sensor verification was done
+with motors stopped. PWM switching noise on a shared ground plane is a
+known cause of I2C and encoder glitches, and no motor decoupling
+capacitor is fitted (see decision #5 discussion). The next honest
+checkpoint is re-running the sensor tests *while motors are spinning*.

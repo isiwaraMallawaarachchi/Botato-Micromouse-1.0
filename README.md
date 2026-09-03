@@ -26,7 +26,7 @@ BOTATO is a competitive micromouse robot built for IEEE-standard 16×16 maze-sol
 
 ## 1. ToF Sensor
 
-All five VL53 sensors share a single I2C bus (I2C1). XSHUT pins are used for sequential address assignment on boot. GPIO1 pins signal data-ready via falling-edge EXTI interrupts.
+All five VL53 sensors share **I2C1** (PB6/PB7). The MPU6050 is on a **separate I2C2 bus** (PB10/PB9) — see DECISIONS.md #16 for why. XSHUT pins are used for sequential address assignment on boot. GPIO1 pins signal data-ready via falling-edge EXTI interrupts.
 
 ### ToF Pinout & Addressing
 
@@ -36,7 +36,7 @@ All five VL53 sensors share a single I2C bus (I2C1). XSHUT pins are used for seq
 | ToF LeftFront | PA3 | EXTI3 | PB4 | `0x31` |
 | ToF Front | PA4 | EXTI4 | PB5 | `0x32` |
 | ToF RightFront | PB0 | EXTI0 | PA7 | `0x33` |
-| ToF Right | PB1 | EXTI1 | PB10 | `0x34` |
+| ToF Right | PB1 | EXTI1 | PB8 | `0x34` |
 
 > **Note:** Every ToF sensor now has a dedicated EXTI line.
 > 
@@ -64,9 +64,7 @@ All five VL53 sensors share a single I2C bus (I2C1). XSHUT pins are used for seq
 #define XSHUT_RIGHT_PIN         GPIO_PIN_10
 ```
 
-### Data-Ready Interrupt Flow (Planned Design)
-
-> **Not yet implemented.** This is the intended design, not current firmware behaviour. The EXTI handlers in `stm32f4xx_it.c` today only call the HAL-generated `HAL_GPIO_EXTI_IRQHandler()`; no `HAL_GPIO_EXTI_Callback()` exists yet, so the flags below are not currently set by anything.
+### Data-Ready Interrupt Flow
 
 ```c
 // Sensor index definitions — must match XSHUT boot sequence order
@@ -118,13 +116,13 @@ The MPU6050 shares the fast-mode I2C bus with the ToF sensors.
 
 | Signal | Pin | Notes |
 |---|---|---|
-| SCL | PB8 | Shared I2C1 bus (4.7 kΩ pull-up to 3.3V required) |
-| SDA | PB9 | Shared I2C1 bus (4.7 kΩ pull-up to 3.3V required) |
+| SCL | PB10 | Dedicated I2C2 bus — not shared with the ToF sensors |
+| SDA | PB9 | Dedicated I2C2 bus (AF9, not AF4 — see DECISIONS.md #16) |
 | AD0 | GND | Fixed I2C address `0x68` |
 | INT | N/A | IMU read synchronously in control loop — no interrupt needed |
 | XDA/XCL | N/A | Auxiliary I2C not used |
 
-> **Firmware Note (planned, not yet implemented):** The MPU6050's Digital Low Pass Filter (DLPF) must be manually configured in the firmware to match the 1 kHz frequency of the master control loop.
+> **Firmware Note:** The MPU6050's Digital Low Pass Filter (DLPF) must be manually configured in the firmware to match the 1 kHz frequency of the master control loop.
 
 ---
 
@@ -168,7 +166,7 @@ Encoders utilize hardware quadrature processing with zero CPU overhead. Both TIM
 | Right | Phase A (CH1) | PA15 | TIM2_CH1 |
 | Right | Phase B (CH2) | PB3 | TIM2_CH2 |
 
-> **PA15 Note:** PA15 is the JTDI pin, but the STM32F411 does **not** have an AFIO peripheral — that remap mechanism is F1-series only and has no equivalent in the F4 HAL. No remap call is needed or possible: setting Debug = Serial Wire in CubeMX already releases PA15 from JTAG for `TIM2_CH1` automatically. Do **not** add `__HAL_AFIO_REMAP_SWJ_NOJTAG()` — it doesn't exist in the F4 HAL and will fail to compile.
+> **PA15 Note:** PA15 is JTDI by default, but the STM32F411 has **no AFIO peripheral** — `__HAL_RCC_AFIO_CLK_ENABLE()` and `__HAL_AFIO_REMAP_SWJ_NOJTAG()` are F1-series only and will not compile. Setting Debug = Serial Wire in CubeMX already releases PA15 for TIM2_CH1. No remap code is needed. See DECISIONS.md #9.
 
 ---
 
@@ -209,21 +207,17 @@ Encoders utilize hardware quadrature processing with zero CPU overhead. Both TIM
 | 1 | EXTI0 to EXTI4 | ToF dedicated data-ready lines |
 | 15 (lowest) | SysTick | HAL tick only |
 
-### Control Loop (TIM3 — 1 kHz) (Planned Design)
-
-> **Not yet implemented.** `main.c`'s main loop is currently an empty stub — none of the steps below exist in code yet. This describes the intended one-line-ISR architecture: `TIM3_IRQHandler` will only set a flag, and all real work happens in the main loop.
+### Control Loop (TIM3 — 1 kHz)
 
 ```text
 TIM3 IRQ fires every 1 ms
 │
-└── Set control_tick = 1                  (signals main loop; ISR does nothing else)
-
-Main loop, on control_tick:
 ├── Read TIM5->CNT  → left encoder delta   (no I2C, no ISR)
 ├── Read TIM2->CNT  → right encoder delta  (no I2C, no ISR)
 ├── Read MPU6050 over I2C                  (synchronous, no INT pin)
 ├── Run PID speed + alignment controller
-└── Write TIM1->CCR1, TIM1->CCR2          (left/right PWM duty)
+├── Write TIM1->CCR1, TIM1->CCR2          (left/right PWM duty)
+└── Set control_tick_flag = 1             (signals main loop)
 ```
 
 ---

@@ -78,8 +78,6 @@ void Error_Handler(void);
 #define TOF_RIGHT_INT_Pin GPIO_PIN_1
 #define TOF_RIGHT_INT_GPIO_Port GPIOB
 #define TOF_RIGHT_INT_EXTI_IRQn EXTI1_IRQn
-#define XSHUT_RIGHT_Pin GPIO_PIN_10
-#define XSHUT_RIGHT_GPIO_Port GPIOB
 #define AIN1_Pin GPIO_PIN_12
 #define AIN1_GPIO_Port GPIOB
 #define AIN2_Pin GPIO_PIN_13
@@ -94,6 +92,8 @@ void Error_Handler(void);
 #define XSHUT_LF_GPIO_Port GPIOB
 #define XSHUT_FRONT_Pin GPIO_PIN_5
 #define XSHUT_FRONT_GPIO_Port GPIOB
+#define XSHUT_RIGHT_Pin GPIO_PIN_8
+#define XSHUT_RIGHT_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
