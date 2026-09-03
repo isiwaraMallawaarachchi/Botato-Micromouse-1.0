@@ -53,8 +53,8 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, XSHUT_RF_Pin|XSHUT_LEFT_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, XSHUT_RIGHT_Pin|AIN1_Pin|AIN2_Pin|BIN1_Pin
-                          |BIN2_Pin|XSHUT_LF_Pin|XSHUT_FRONT_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, AIN1_Pin|AIN2_Pin|BIN1_Pin|BIN2_Pin
+                          |XSHUT_LF_Pin|XSHUT_FRONT_Pin|XSHUT_RIGHT_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : TOF_LEFT_INT_Pin TOF_LF_INT_Pin TOF_FRONT_INT_Pin */
   GPIO_InitStruct.Pin = TOF_LEFT_INT_Pin|TOF_LF_INT_Pin|TOF_FRONT_INT_Pin;
@@ -81,16 +81,16 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : XSHUT_RIGHT_Pin XSHUT_LF_Pin XSHUT_FRONT_Pin */
-  GPIO_InitStruct.Pin = XSHUT_RIGHT_Pin|XSHUT_LF_Pin|XSHUT_FRONT_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  /*Configure GPIO pins : AIN1_Pin AIN2_Pin BIN1_Pin BIN2_Pin */
+  GPIO_InitStruct.Pin = AIN1_Pin|AIN2_Pin|BIN1_Pin|BIN2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : AIN1_Pin AIN2_Pin BIN1_Pin BIN2_Pin */
-  GPIO_InitStruct.Pin = AIN1_Pin|AIN2_Pin|BIN1_Pin|BIN2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  /*Configure GPIO pins : XSHUT_LF_Pin XSHUT_FRONT_Pin XSHUT_RIGHT_Pin */
+  GPIO_InitStruct.Pin = XSHUT_LF_Pin|XSHUT_FRONT_Pin|XSHUT_RIGHT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);

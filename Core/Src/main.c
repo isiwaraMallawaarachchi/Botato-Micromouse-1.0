@@ -25,6 +25,18 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+/* ===== PICK ONE TEST — comment out the rest ===== */
+//#define RUN_TEST_I2C
+//#define RUN_TEST_TOF
+//#define RUN_TEST_IMU
+//#define RUN_TEST_MOTOR
+#define RUN_TEST_ENCODER
+
+#include "test_i2c.h"
+#include "test_tof.h"
+#include "test_imu.h"
+#include "test_motor.h"
+#include "test_encoder.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,7 +105,27 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM5_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
+  #ifdef RUN_TEST_I2C
+  	  Test_I2C_Scan();
+  #endif
+
+  #ifdef RUN_TEST_TOF
+  	  Test_ToF_Init();
+  #endif
+
+  #ifdef RUN_TEST_IMU
+  	  Test_IMU_Init();
+  #endif
+
+  #ifdef RUN_TEST_MOTOR
+  	  Test_Motor_Run();
+  #endif
+
+  #ifdef RUN_TEST_ENCODER
+  	  Test_Encoder_Init();
+  #endif
 
   /* USER CODE END 2 */
 
@@ -101,6 +133,17 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  #ifdef RUN_TEST_TOF
+	  	  Test_ToF_ReadDistances();
+	  #endif
+
+	  #ifdef RUN_TEST_IMU
+	  	  Test_IMU_Process();
+	  #endif
+
+	  #ifdef RUN_TEST_ENCODER
+	  	  Test_Encoder_Update();
+	  #endif
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
