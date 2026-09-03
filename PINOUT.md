@@ -63,7 +63,7 @@ no shared interrupt handlers.
 | LeftFront | PA3 | EXTI3 | PB4 | `0x31` |
 | Front | PA4 | EXTI4 | PB5 | `0x32` |
 | RightFront | PB0 | EXTI0 | PA7 | `0x33` |
-| Right | PB1 | EXTI1 | PB10 | `0x34` |
+| Right | PB1 | EXTI1 | PB8 | `0x34` |
 
 **GPIO1 pin config:** `GPIO_MODE_IT_FALLING`, `GPIO_PULLUP`.
 **XSHUT pin config:** `GPIO_MODE_OUTPUT_OD` (open-drain), `GPIO_NOPULL`.
@@ -73,12 +73,30 @@ release (sensor's own pull-up brings it to 2.8V) without ever driving
 
 ---
 
-## I2C Bus — Shared by ToF Sensors + MPU6050
+## I2C Buses — TWO separate buses
 
-| Signal | Pin | Notes |
-|---|---|---|
-| I2C1_SCL | PB8 | Fast Mode 400 kHz. External 4.7 kΩ pull-up to 3.3V required. |
-| I2C1_SDA | PB9 | External 4.7 kΩ pull-up to 3.3V required. |
+The ToF sensors and the IMU are on **separate I2C peripherals**. They were
+split because five ToF breakout boards each carry a 10 kΩ pull-up; in
+parallel these dragged the shared bus down to ~1.5 kΩ, below the level at
+which the MPU6050 could reliably pull the line low. See DECISIONS.md #16.
+
+| Bus | Signal | Pin | AF | Devices |
+|---|---|---|---|---|
+| I2C1 | SCL | PB6 | AF4 | 5× ToF sensors |
+| I2C1 | SDA | PB7 | AF4 | 5× ToF sensors |
+| I2C2 | SCL | PB10 | AF4 | MPU6050 only |
+| I2C2 | SDA | PB9 | **AF9** | MPU6050 only |
+
+Both buses run Fast Mode 400 kHz.
+
+> ⚠️ **PB9 uses AF9, not AF4.** PB9 can serve either I2C1_SDA (AF4) or
+> I2C2_SDA (AF9). If generated code sets AF4 for PB9 under I2C2, the pin
+> stays internally wired to I2C1 and the bus silently does nothing.
+> Verify `GPIO_AF9_I2C2` appears in `HAL_I2C_MspInit` in `Core/Src/i2c.c`.
+
+**Pull-ups:** I2C1 uses the ToF boards' own onboard 10 kΩ resistors
+(~2 kΩ combined). I2C2 uses only the MPU6050 board's onboard pull-ups —
+no external resistors were needed, confirmed working.
 
 ---
 
@@ -86,8 +104,8 @@ release (sensor's own pull-up brings it to 2.8V) without ever driving
 
 | Signal | Pin | Notes |
 |---|---|---|
-| SCL | PB8 | Shared I2C1 bus |
-| SDA | PB9 | Shared I2C1 bus |
+| SCL | PB10 | I2C2 — dedicated bus, not shared with ToF |
+| SDA | PB9 | I2C2 — dedicated bus, not shared with ToF |
 | AD0 | GND | Fixed I2C address `0x68` |
 | INT | Not connected | Not wired — see DECISIONS.md for rationale |
 | XDA / XCL | Not connected | Auxiliary I2C unused |
@@ -163,7 +181,10 @@ has no AFIO peripheral.
 
 | Pin | Status |
 |---|---|
-| PB6, PB7 | Not configured in this project. Do not assign — see DECISIONS.md for the board revision history behind this. |
+| PA11, PA12, PB2, PC13, PC14, PC15 | Unused and available. |
+
+> **Note:** PB6/PB7 were previously left unused due to a schematic
+> conflict (DECISIONS.md #10). They now carry I2C1 for the ToF sensors.
 
 ---
 

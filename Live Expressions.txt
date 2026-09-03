@@ -1,0 +1,39 @@
+=============================================================
+  Live Expressions to watch, per test
+=============================================================
+
+  Two separate I2C buses on this board:
+    I2C1 (PB6/PB7)  -> five ToF sensors
+    I2C2 (PB10/PB9) -> MPU6050 only
+
+RUN_TEST_I2C
+  i2c1_device_count     expect 5   (five ToF, after addressing)
+  i2c1_found_addr[0..4] expect 48, 49, 50, 51, 52   (0x30..0x34)
+  i2c2_device_count     expect 1   (MPU6050)
+  i2c2_found_addr[0]    expect 104 (0x68)
+
+RUN_TEST_TOF                                     [bus: I2C1]
+  tof_result[0..4]      all 1 (PASS)
+  tof_addr[0..4]        48, 49, 50, 51, 52
+  tof_distance_mm[0..4] live mm values
+  tof_error_count[0..4] all 0
+
+RUN_TEST_IMU                                     [bus: I2C2]
+  imu_result            1 (PASS)
+  imu_ready             1
+  imu_who_am_i          104
+  imu_fail_step         0  (if failed, see table in test_imu.h)
+  imu_tick_count        climbing
+  imu_yaw               changes when you rotate the board
+                        NOTE: set Number Format to Float in Live
+                        Expressions, or it displays as a huge integer
+
+RUN_TEST_MOTOR
+  motor_phase           1 forward, 2 reverse, 3 done
+  (secure the robot — wheels off the ground)
+
+RUN_TEST_ENCODER
+  enc_left_count        changes when you turn the left wheel by hand
+  enc_right_count       changes when you turn the right wheel
+  enc_left_delta        non-zero while turning (updates every 200ms)
+  enc_right_delta       non-zero while turning
