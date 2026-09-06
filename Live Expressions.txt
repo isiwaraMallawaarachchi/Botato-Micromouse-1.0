@@ -1,39 +1,72 @@
 =============================================================
-  Live Expressions to watch, per test
+  Live Expressions to watch, per test  (C++ / member access)
 =============================================================
+
+  Live Expressions can't call C++ methods, but CAN read member
+  variables directly. Chain through the global `robot` to the
+  member fields (note the trailing underscore on member names).
 
   Two separate I2C buses on this board:
     I2C1 (PB6/PB7)  -> five ToF sensors
     I2C2 (PB10/PB9) -> MPU6050 only
 
-RUN_TEST_I2C
-  i2c1_device_count     expect 5   (five ToF, after addressing)
-  i2c1_found_addr[0..4] expect 48, 49, 50, 51, 52   (0x30..0x34)
-  i2c2_device_count     expect 1   (MPU6050)
-  i2c2_found_addr[0]    expect 104 (0x68)
-
-RUN_TEST_TOF                                     [bus: I2C1]
-  tof_result[0..4]      all 1 (PASS)
-  tof_addr[0..4]        48, 49, 50, 51, 52
-  tof_distance_mm[0..4] live mm values
-  tof_error_count[0..4] all 0
-
-RUN_TEST_IMU                                     [bus: I2C2]
-  imu_result            1 (PASS)
-  imu_ready             1
-  imu_who_am_i          104
-  imu_fail_step         0  (if failed, see table in test_imu.h)
-  imu_tick_count        climbing
-  imu_yaw               changes when you rotate the board
-                        NOTE: set Number Format to Float in Live
-                        Expressions, or it displays as a huge integer
-
-RUN_TEST_MOTOR
-  motor_phase           1 forward, 2 reverse, 3 done
-  (secure the robot — wheels off the ground)
+  Select a test with the #define block at the top of main.cpp.
+  ToF index order: 0=Left 1=LeftFront 2=Front 3=RightFront 4=Right
 
 RUN_TEST_ENCODER
-  enc_left_count        changes when you turn the left wheel by hand
-  enc_right_count       changes when you turn the right wheel
-  enc_left_delta        non-zero while turning (updates every 200ms)
-  enc_right_delta       non-zero while turning
+  robot.encL_.distanceMm_     left wheel distance (mm), turn wheel by hand
+  robot.encR_.distanceMm_     right wheel distance (mm)
+  robot.encL_.speedMmPerS_    left speed (mm/s), non-zero while turning
+  robot.encR_.speedMmPerS_    right speed (mm/s)
+  robot.encL_.delta_          left raw ticks this control tick
+  robot.encR_.delta_          right raw ticks
+
+RUN_TEST_GYRO                                    [bus: I2C2]
+  robot.gyro_.ok_             expect true
+  robot.gyro_.whoAmI_         expect 104 (0x68)
+  robot.gyro_.angleDeg_       heading (deg), changes when you rotate board
+                              (set Number Format to Float if it shows huge int)
+  robot.gyro_.rateDps_        non-zero while rotating, ~0 when still
+
+RUN_TEST_TOF                                     [bus: I2C1]
+  robot.walls_.distMm_[0]     Left       distance (mm), filtered + calibrated
+  robot.walls_.distMm_[1]     LeftFront   distance (mm)
+  robot.walls_.distMm_[2]     Front       distance (mm)
+  robot.walls_.distMm_[3]     RightFront  distance (mm)
+  robot.walls_.distMm_[4]     Right       distance (mm)
+  robot.walls_.ok_[0]         expect true (through [4])
+
+RUN_TEST_MOTOR
+  wheels ramp forward, then reverse
+  robot.drive_.lastLeft_      last PWM sent to left motor
+  robot.drive_.lastRight_     last PWM sent to right motor
+  (secure the robot — wheels off the ground)
+
+RUN_TEST_DRIVE                                   [hold-heading]
+  robot.gyro_.angleDeg_       twist by hand -> returns toward 0
+  robot.ctrl_.pvX_            measured forward speed (mm/s), ~0
+  robot.ctrl_.pvW_            measured turn rate (deg/s)
+  robot.drive_.lastLeft_      live correction PWM
+  robot.drive_.lastRight_
+  (wheels ON the ground; keep hands clear)
+
+RUN_TEST_MODES
+  robot.modes_.state_         0 IDLE  1 CALIBRATING  2 SEARCH_RUN  3 SPEED_RUN
+  press PA6 short  -> 2 (search)
+  press PA5 short  -> 3 (speed)
+  any press mid-run -> 0 (idle)
+  hold PA6 > 3s from idle -> 1 (calibrate), then back to 0
+  both buttons together   -> full reset to 0
+
+=============================================================
+  Notes
+=============================================================
+- No separate RUN_TEST_I2C in the C++ build. Confirm both buses via
+  RUN_TEST_TOF (I2C1) and RUN_TEST_GYRO (I2C2). Both pass = both healthy.
+- ENCODER/GYRO/TOF/MODES need no per-test call — robot.init() +
+  robot.onMainLoop() + the 1kHz tick already run them. Just watch.
+- MOTOR and DRIVE have explicit harnesses (Test_Motor_*, Test_Drive_Init).
+- Don't enable RUN_TEST_DRIVE and RUN_TEST_MODES together — both drive
+  the control loop.
+- Member names end in `_` (encL_, distanceMm_, etc.) — that's the naming
+  convention in these classes. Match it exactly or the expression fails.

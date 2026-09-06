@@ -1,18 +1,8 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
+  * @file           : main.cpp
+  * @brief          : Main program body  (TESTING build)
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -25,80 +15,62 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-/* ===== PICK ONE TEST — comment out the rest ===== */
-//#define RUN_TEST_I2C
+/* ===== PICK ONE TEST — comment out the rest ===== *
+ * Phase 1 (watch robot.<member> in Live Expressions):
+ *   ENCODER : robot.encL_.distanceMm_ / encR_.distanceMm_
+ *   GYRO    : robot.gyro_.angleDeg_ (+90 must be a physical RIGHT turn)
+ *   TOF     : robot.walls_.distMm_[0..4]
+ *   MOTOR   : wheels ramp fwd/rev (Test_Motor_*)
+ *   DRIVE   : hold heading, twist by hand -> returns
+ *   MODES   : press buttons -> robot.modes_.state_
+ * Phase 2:
+ *   P2_PIVOT : commanded 90 deg turn + hold  (wheels on ground)
+ *   P2_DRIVE : drive straight ~1 cell holding heading (clear space ahead)
+ * Don't enable two motion tests at once. */
+//#define RUN_TEST_ENCODER
+//#define RUN_TEST_GYRO
 //#define RUN_TEST_TOF
-//#define RUN_TEST_IMU
 //#define RUN_TEST_MOTOR
-#define RUN_TEST_ENCODER
+//#define RUN_TEST_DRIVE
+#define RUN_TEST_MODES
+//#define P2_TEST_PIVOT
+//#define P2_TEST_DRIVE
 
-#include "test_i2c.h"
-#include "test_tof.h"
-#include "test_imu.h"
-#include "test_motor.h"
-#include "test_encoder.h"
+#include "Robot.hpp"
+#include "Tests.hpp"
+#include "Phase2Test.hpp"
 /* USER CODE END Includes */
 
-/* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
 /* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
 /* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
 /* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
-
 /* USER CODE BEGIN PV */
-
 /* USER CODE END PV */
 
-/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
 /* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
 /* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
   /* USER CODE END Init */
 
-  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_TIM1_Init();
@@ -107,67 +79,44 @@ int main(void)
   MX_TIM5_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
-  #ifdef RUN_TEST_I2C
-  	  Test_I2C_Scan();
-  #endif
+  robot.init();
 
-  #ifdef RUN_TEST_TOF
-  	  Test_ToF_Init();
-  #endif
-
-  #ifdef RUN_TEST_IMU
-  	  Test_IMU_Init();
-  #endif
-
-  #ifdef RUN_TEST_MOTOR
-  	  Test_Motor_Run();
-  #endif
-
-  #ifdef RUN_TEST_ENCODER
-  	  Test_Encoder_Init();
-  #endif
-
+#ifdef RUN_TEST_MOTOR
+  Test_Motor_Init();
+#endif
+#ifdef RUN_TEST_DRIVE
+  Test_Drive_Init();
+#endif
+#ifdef P2_TEST_PIVOT
+  P2_PivotTurn_Init();
+#endif
+#ifdef P2_TEST_DRIVE
+  P2_OneCellDrive_Init();
+#endif
   /* USER CODE END 2 */
 
-  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  #ifdef RUN_TEST_TOF
-	  	  Test_ToF_ReadDistances();
-	  #endif
+    robot.onMainLoop();
 
-	  #ifdef RUN_TEST_IMU
-	  	  Test_IMU_Process();
-	  #endif
-
-	  #ifdef RUN_TEST_ENCODER
-	  	  Test_Encoder_Update();
-	  #endif
+#ifdef RUN_TEST_MOTOR
+    Test_Motor_Update();
+#endif
     /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
 
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -181,8 +130,6 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -197,17 +144,17 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+extern "C" void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM3) {
+    robot.onControlTick();
+  }
+}
 /* USER CODE END 4 */
 
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
@@ -215,18 +162,9 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
