@@ -28,6 +28,8 @@ public:
     GridPose pose_;
     float headingRef_ = 0.0f;      // accumulated commanded heading
     float turnTargetHeading_ = 0.0f;
+    float wallErrDbg_ = 0.0f;
+    bool  wallValidDbg_ = false;
 
 private:
     ControlLoop*     ctrl_  = nullptr;
@@ -47,6 +49,7 @@ private:
     float cellStartDistance_ = 0.0f;
     float searchSpeed_ = 0.0f;
     uint32_t turnStartMs_ = 0;
+    float wcRunStartDist_ = -1.0f;
 
     void beginCellSequence();
     void senseWalls();
@@ -57,6 +60,8 @@ private:
     bool driveComplete();
     float avgDistanceMm() const;
     void  goalOrReturnTransition();
+    void updateWallCentering();
+    void approachSlowdown();
 };
 
 #endif

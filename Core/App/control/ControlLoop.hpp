@@ -7,11 +7,14 @@
 #include "PIDController.hpp"
 
 /*
- * ControlLoop — 1kHz control. Modes:
- *   setTargets(speedX, speedW) — direct rate mode (speedW = turn rate).
- *   holdHeading(deg)           — pivot: zero forward, hold absolute heading.
- *   driveStraight(speedX, deg) — forward at speedX while holding heading deg.
- * All heading control is cascaded: heading error -> rate target -> rate PID.
+ * ControlLoop — 1kHz control.
+ *   setTargets(speedX, speedW) — direct rate mode
+ *   holdHeading(deg)           — pivot, zero forward
+ *   driveStraight(speedX, deg) — forward while holding heading
+ *
+ * Heading is cascaded: heading error -> rate target -> rate PID -> PWM.
+ * When driving a corridor with both side walls visible, a wall-centering
+ * PID adds a correction to the rate target, cancelling gyro drift.
  */
 class ControlLoop {
 public:
@@ -25,10 +28,17 @@ public:
     void enable(bool on);
     void resetControllers();
 
-    void setWallError(float mm, bool valid) { wallErrorMm_ = mm; wallValid_ = valid; }
+    // Corridor centering input, set each main loop from the wall sensors.
+    // errorMm = leftDistance - rightDistance (0 = centred). valid = both
+    // walls actually seen; when false the correction is skipped entirely.
+    void setWallError(float errorMm, bool valid) {
+        wallErrorMm_ = errorMm;
+        wallValid_   = valid;
+    }
 
     float pvX()  const { return pvX_; }
     float pvW()  const { return pvW_; }
+    float wallCorrection() const { return wallCorr_; }
     float headingDeg() const { return gyro_->angleDeg(); }
     int16_t leftPwm()  const { return drive_->lastLeftPwm(); }
     int16_t rightPwm() const { return drive_->lastRightPwm(); }
@@ -49,12 +59,14 @@ private:
 
     float wallErrorMm_ = 0.0f;
     bool  wallValid_   = false;
+    float wallCorr_    = 0.0f;   // last applied correction (debug)
 
     bool enabled_ = false;
 
-    PIDController pidX_{5.0f, 0.0f, 0.0f, 400.0f};
-    PIDController pidW_{4.0f, 0.0f, 2.0f, 400.0f};
-    PIDController pidHeading_{40.0f, 0.0f, 20.0f, 200.0f};
+    PIDController pidX_{4.0f, 0.15f, 0.0f, 400.0f};
+    PIDController pidW_{65.0f, 0.0f, 200.0f, 400.0f};
+    PIDController pidHeading_{8.0f, 0.0f, 0.5f, 200.0f};
+    PIDController pidWall_{0.8f, 0.0f, 0.8f, 20.0f};  // wall offset: mm error -> deg of heading lean
 };
 
-#endif // APP_CONTROLLOOP_HPP
+#endif
