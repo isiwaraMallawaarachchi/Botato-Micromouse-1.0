@@ -127,6 +127,8 @@ bool Navigator::driveComplete() {
 void Navigator::update() {
     if (state_ == IDLE || state_ == DONE) return;
 
+    updateWallCentering();
+
     switch (phase_) {
     case SENSE:
         senseWalls();
@@ -167,5 +169,27 @@ void Navigator::goalOrReturnTransition() {
         ctrl_->setTargets(0.0f, 0.0f);
         ctrl_->enable(false);
         state_ = DONE;
+    }
+}
+
+// Feed the corridor-centering controller. Only valid when BOTH side walls
+// are seen; in an open cell or a junction the difference is meaningless and
+// would steer the robot wrongly, so we mark it invalid and the ControlLoop
+// skips the correction entirely.
+void Navigator::updateWallCentering() {
+    bool leftSeen  = walls_->wallPresent(cfg::TOF_LEFT);
+    bool rightSeen = walls_->wallPresent(cfg::TOF_RIGHT);
+
+    if (leftSeen && rightSeen) {
+        // +ve error = too close to the right wall => steer left.
+        float err = walls_->distanceMm(cfg::TOF_LEFT)
+                  - walls_->distanceMm(cfg::TOF_RIGHT);
+        wallErrDbg_   = err;
+        wallValidDbg_ = true;
+        ctrl_->setWallError(err, true);
+    } else {
+        wallErrDbg_   = 0.0f;
+        wallValidDbg_ = false;
+        ctrl_->setWallError(0.0f, false);
     }
 }

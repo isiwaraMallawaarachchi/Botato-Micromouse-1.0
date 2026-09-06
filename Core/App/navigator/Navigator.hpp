@@ -28,6 +28,8 @@ public:
     GridPose pose_;
     float headingRef_ = 0.0f;      // accumulated commanded heading
     float turnTargetHeading_ = 0.0f;
+    float wallErrDbg_ = 0.0f;
+    bool  wallValidDbg_ = false;
 
 private:
     ControlLoop*     ctrl_  = nullptr;
@@ -57,6 +59,7 @@ private:
     bool driveComplete();
     float avgDistanceMm() const;
     void  goalOrReturnTransition();
+    void updateWallCentering();
 };
 
 #endif
