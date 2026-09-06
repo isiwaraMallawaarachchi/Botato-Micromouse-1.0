@@ -8,8 +8,10 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
 #include "i2c.h"
 #include "tim.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -72,12 +74,14 @@ int main(void)
   /* USER CODE END SysInit */
 
   MX_GPIO_Init();
+  MX_DMA_Init();          // must precede MX_USART6_UART_Init: HAL_DMA_Init needs the clock
   MX_I2C1_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM5_Init();
   MX_I2C2_Init();
+  MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
   robot.init();
 
@@ -103,6 +107,10 @@ int main(void)
 #ifdef RUN_TEST_MOTOR
     Test_Motor_Update();
 #endif
+
+    /* Stage 2's blocking "BOTATO" test transmit lived here. It is gone:
+     * telemetry.update() inside robot.onMainLoop() now owns USART6. */
+
     /* USER CODE END WHILE */
     /* USER CODE BEGIN 3 */
   }
@@ -148,6 +156,19 @@ extern "C" void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM3) {
     robot.onControlTick();
+  }
+}
+
+/* DMA transmit-complete for USART6.
+ *
+ * DO NOT DELETE. Without this, txBusy_ never clears: the first telemetry
+ * message transmits, and then telemetry stops forever with no error anywhere.
+ * TELEMETRY.md §3.6 calls this the single most likely bring-up bug on the
+ * STM32 side. Symptom: exactly one line arrives, then silence. */
+extern "C" void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART6) {
+    telemetry.onTxComplete();
   }
 }
 /* USER CODE END 4 */

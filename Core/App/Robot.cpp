@@ -4,6 +4,7 @@
 extern "C" {
     #include "tim.h"
     #include "i2c.h"
+    #include "usart.h"
 }
 
 Robot robot;   // the one global instance
@@ -38,6 +39,10 @@ void Robot::init() {
     btn_.init();
     modes_.init(&btn_, &ctrl_, &gyro_, &navigator_);
 
+    // Telemetry last: everything it samples must already exist.
+    telemetry.init(&huart6);
+    telemetry.event(EV_BOOT);
+
     // Start the 1kHz control tick last, once everything is ready.
     HAL_TIM_Base_Start_IT(&htim3);
 }
@@ -48,6 +53,7 @@ void Robot::onControlTick() {
     encL_.update();
     encR_.update();
     ctrl_.tick();       // fuse -> PID -> motors
+    telemetry.onControlTick();   // LAST. Control work always comes first.
 }
 
 void Robot::onMainLoop() {
@@ -55,4 +61,5 @@ void Robot::onMainLoop() {
     btn_.update();
     modes_.update();
     led_.update();
+    telemetry.update();          // LAST. Debug is the lowest priority thing here.
 }

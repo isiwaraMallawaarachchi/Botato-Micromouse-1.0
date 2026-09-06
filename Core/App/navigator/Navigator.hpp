@@ -11,6 +11,7 @@
 class Navigator {
 public:
     enum State { IDLE, SEARCH, RETURN, SPEED, DONE };
+    enum Phase { SENSE, DECIDE, TURNING, DRIVING, ARRIVE };
 
     void init(ControlLoop* ctrl, WallSensorArray* walls,
               Encoder* encL, Encoder* encR);
@@ -21,6 +22,7 @@ public:
     void update();
 
     State state() const { return state_; }
+    Phase phase() const { return phase_; }
     int cellX() const { return pose_.x; }
     int cellY() const { return pose_.y; }
 
@@ -39,7 +41,6 @@ private:
     FloodFill flood_;
 
     State state_ = IDLE;
-    enum Phase { SENSE, DECIDE, TURNING, DRIVING, ARRIVE };
     Phase phase_ = SENSE;
 
     Turn  pendingTurn_ = TURN_NONE;
