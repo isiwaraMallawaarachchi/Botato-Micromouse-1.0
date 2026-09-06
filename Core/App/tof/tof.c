@@ -465,3 +465,168 @@ HAL_StatusTypeDef VL53L0X_ReadRangeSingleMillimeters(VL53L0X_Dev_t *dev, uint16_
     *out_mm = range;
     return HAL_OK;
 }
+
+/* ========================================================================
+ *  Continuous mode + filtered reads (added for the micromouse)
+ * ======================================================================== */
+
+/* SetMeasurementTimingBudget() and GetMeasurementTimingBudget() already
+ * exist as static helpers above; expose the setter publicly here.        */
+HAL_StatusTypeDef VL53L0X_SetTimingBudget(VL53L0X_Dev_t *dev, uint32_t budget_us)
+{
+    return SetMeasurementTimingBudget(dev, budget_us) ? HAL_OK : HAL_ERROR;
+}
+
+HAL_StatusTypeDef VL53L0X_StartContinuous(VL53L0X_Dev_t *dev, uint32_t period_ms)
+{
+    /* Re-apply the stop variable, same preamble the single-shot read uses. */
+    WriteReg8(dev, 0x80, 0x01);
+    WriteReg8(dev, 0xFF, 0x01);
+    WriteReg8(dev, 0x00, 0x00);
+    WriteReg8(dev, 0x91, dev->stop_variable);
+    WriteReg8(dev, 0x00, 0x01);
+    WriteReg8(dev, 0xFF, 0x00);
+    WriteReg8(dev, 0x80, 0x00);
+
+    if (period_ms != 0)
+    {
+        /* Timed continuous: pace readings to period_ms. The interval is
+         * stored in a macro-clock-corrected register.                    */
+        uint16_t osc_cal = 0;
+        ReadReg16(dev, 0xF8 /* OSC_CALIBRATE_VAL */, &osc_cal);
+        uint32_t period = period_ms;
+        if (osc_cal != 0)
+        {
+            period *= osc_cal;
+        }
+        uint8_t buf[4] = {
+            (uint8_t)((period >> 24) & 0xFF), (uint8_t)((period >> 16) & 0xFF),
+            (uint8_t)((period >> 8) & 0xFF),  (uint8_t)(period & 0xFF)
+        };
+        HAL_I2C_Mem_Write(dev->hi2c, dev->address,
+                          REG_SYSTEM_INTERMEASUREMENT_PERIOD, I2C_MEMADD_SIZE_8BIT,
+                          buf, 4, IO_TIMEOUT_MS);
+        WriteReg8(dev, REG_SYSRANGE_START, 0x04);  /* timed continuous */
+    }
+    else
+    {
+        WriteReg8(dev, REG_SYSRANGE_START, 0x02);  /* back-to-back continuous */
+    }
+
+    /* Reset filter state so stale samples from a previous mode don't leak. */
+    dev->window_count = 0;
+    dev->window_index = 0;
+    dev->ema_valid    = false;
+    dev->last_raw_mm  = 0;
+    dev->last_status  = 0xFF;
+
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef VL53L0X_StopContinuous(VL53L0X_Dev_t *dev)
+{
+    WriteReg8(dev, REG_SYSRANGE_START, 0x01);  /* stop */
+    WriteReg8(dev, 0xFF, 0x01);
+    WriteReg8(dev, 0x00, 0x00);
+    WriteReg8(dev, 0x91, 0x00);
+    WriteReg8(dev, 0x00, 0x01);
+    WriteReg8(dev, 0xFF, 0x00);
+    return HAL_OK;
+}
+
+/* Insertion-sort median of the current window. Window is small (3 or 5)
+ * so this is trivially cheap. Operates on a copy so the ring is intact. */
+static uint16_t MedianOfWindow(const VL53L0X_Dev_t *dev)
+{
+    uint16_t tmp[TOF_MEDIAN_WINDOW];
+    uint8_t  n = dev->window_count;
+
+    for (uint8_t i = 0; i < n; i++)
+    {
+        tmp[i] = dev->window[i];
+    }
+    for (uint8_t i = 1; i < n; i++)
+    {
+        uint16_t key = tmp[i];
+        int8_t   j   = (int8_t)(i - 1);
+        while (j >= 0 && tmp[j] > key)
+        {
+            tmp[j + 1] = tmp[j];
+            j--;
+        }
+        tmp[j + 1] = key;
+    }
+    return tmp[n / 2];
+}
+
+HAL_StatusTypeDef VL53L0X_ReadRangeContinuousFiltered(VL53L0X_Dev_t *dev, uint16_t *out_mm)
+{
+    /* Non-blocking: is a new measurement actually ready? */
+    uint8_t int_status = 0;
+    if (ReadReg8(dev, REG_RESULT_INTERRUPT_STATUS, &int_status) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+    if ((int_status & 0x07) == 0)
+    {
+        /* Nothing new yet — hand back the last good filtered value. */
+        if (dev->ema_valid) { *out_mm = (uint16_t)dev->ema; }
+        return HAL_BUSY;
+    }
+
+    /* Read the full range-status + distance block. RESULT_RANGE_STATUS is
+     * the status byte; distance is 16-bit big-endian at offset +10.       */
+    uint8_t range_status = 0;
+    ReadReg8(dev, REG_RESULT_RANGE_STATUS, &range_status);
+
+    uint16_t raw = 0;
+    ReadReg16(dev, (uint8_t)(REG_RESULT_RANGE_STATUS + 10), &raw);
+
+    /* Clear the interrupt so the sensor can post the next reading. */
+    WriteReg8(dev, REG_SYSTEM_INTERRUPT_CLEAR, 0x01);
+
+    /* The range status code is in bits [6:3] of RESULT_RANGE_STATUS.
+     * Code 11 (0x0B) is a valid measurement; anything else is a fault
+     * (sigma fail, signal fail, out of bounds, phase fail, etc.).        */
+    uint8_t status_code = (uint8_t)((range_status & 0x78) >> 3);
+    dev->last_raw_mm = raw;
+    dev->last_status = status_code;
+
+    /* ---- Filter stage 1: status gating ----
+     * Reject anything that isn't a clean measurement. A VL53L0X also
+     * reports ~8190/8191 as an "out of range / no target" sentinel;
+     * treat those as invalid too rather than feeding a huge number in. */
+    if (status_code != 11 || raw >= 8000)
+    {
+        if (dev->ema_valid) { *out_mm = (uint16_t)dev->ema; }
+        return HAL_ERROR;   /* bad reading; last good value preserved */
+    }
+
+    /* ---- Filter stage 2: median ----
+     * Push the good raw sample into the ring, then take the median of
+     * whatever we have. Median kills isolated outlier spikes with no
+     * lag on steady readings.                                          */
+    dev->window[dev->window_index] = raw;
+    dev->window_index = (uint8_t)((dev->window_index + 1) % TOF_MEDIAN_WINDOW);
+    if (dev->window_count < TOF_MEDIAN_WINDOW)
+    {
+        dev->window_count++;
+    }
+    uint16_t med = MedianOfWindow(dev);
+
+    /* ---- Filter stage 3: light EMA ----
+     * Smooth residual jitter. Seeded on the first good sample so it
+     * doesn't ramp up from zero.                                       */
+    if (!dev->ema_valid)
+    {
+        dev->ema = (float)med;
+        dev->ema_valid = true;
+    }
+    else
+    {
+        dev->ema += TOF_EMA_ALPHA * ((float)med - dev->ema);
+    }
+
+    *out_mm = (uint16_t)(dev->ema + 0.5f);
+    return HAL_OK;
+}
