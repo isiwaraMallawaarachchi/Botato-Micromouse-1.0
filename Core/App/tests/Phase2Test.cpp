@@ -5,7 +5,7 @@
 void P2_PivotTurn_Init() {
     robot.control().resetControllers();   // zeroes gyro angle
     robot.control().enable(true);
-    robot.control().holdHeading(45.0f);   // turn to +90 and hold
+    robot.control().holdHeading(90.0f);   // turn to +90 and hold
 }
 
 // TEST 2 — drive straight one cell (~180mm) holding heading 0.

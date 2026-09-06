@@ -4,6 +4,7 @@
 namespace {
     constexpr float MAX_RATE_DPS      = 200.0f;  // cap outer-loop demand
     constexpr float MAX_WALL_CORR_DPS = 60.0f;   // cap wall correction
+    constexpr float MAX_WALL_HEADING_DEG = 20.0f;  // cap the wall-centering heading lean
 }
 
 void ControlLoop::init(Gyro* gyro, Encoder* encL, Encoder* encR,
@@ -51,24 +52,28 @@ void ControlLoop::tick() {
     float rateTarget = targetW_;
 
     if (headingHold_) {
-        float headErr = targetHeadingDeg_ - gyro_->angleDeg();
+        // Wall centering trims the HEADING target, not the rate. One heading
+        // authority => the wall loop and heading loop no longer fight, so the
+        // bot converges to the centreline instead of settling off-centre.
+        float headingTarget = targetHeadingDeg_;
+        if (wallValid_ && targetX_ > 1.0f) {
+            wallCorr_ = pidWall_.compute(wallErrorMm_);      // now DEGREES of lean
+            if (wallCorr_ >  MAX_WALL_HEADING_DEG) wallCorr_ =  MAX_WALL_HEADING_DEG;
+            if (wallCorr_ < -MAX_WALL_HEADING_DEG) wallCorr_ = -MAX_WALL_HEADING_DEG;
+            headingTarget += wallCorr_;
+        } else {
+            wallCorr_ = 0.0f;
+            pidWall_.reset();
+        }
+
+        float headErr = headingTarget - gyro_->angleDeg();
         while (headErr >  180.0f) headErr -= 360.0f;
         while (headErr < -180.0f) headErr += 360.0f;
         rateTarget = pidHeading_.compute(headErr);
         if (rateTarget >  MAX_RATE_DPS) rateTarget =  MAX_RATE_DPS;
         if (rateTarget < -MAX_RATE_DPS) rateTarget = -MAX_RATE_DPS;
-    }
-
-    // Corridor centering: only while driving forward with both walls seen.
-    // Walls don't drift, so this continuously cancels gyro drift.
-    wallCorr_ = 0.0f;
-    if (wallValid_ && targetX_ > 1.0f) {
-        wallCorr_ = pidWall_.compute(wallErrorMm_);
-        if (wallCorr_ >  MAX_WALL_CORR_DPS) wallCorr_ =  MAX_WALL_CORR_DPS;
-        if (wallCorr_ < -MAX_WALL_CORR_DPS) wallCorr_ = -MAX_WALL_CORR_DPS;
-        rateTarget += wallCorr_;
     } else {
-        pidWall_.reset();      // don't carry stale state into the next corridor
+        wallCorr_ = 0.0f;
     }
 
     float fwd  = pidX_.compute(targetX_ - pvX_);

@@ -49,6 +49,7 @@ private:
     float cellStartDistance_ = 0.0f;
     float searchSpeed_ = 0.0f;
     uint32_t turnStartMs_ = 0;
+    float wcRunStartDist_ = -1.0f;
 
     void beginCellSequence();
     void senseWalls();
@@ -60,6 +61,7 @@ private:
     float avgDistanceMm() const;
     void  goalOrReturnTransition();
     void updateWallCentering();
+    void approachSlowdown();
 };
 
 #endif
