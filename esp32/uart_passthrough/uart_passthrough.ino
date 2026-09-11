@@ -43,17 +43,27 @@ static void broadcast(const char* s, size_t n) {
   }
 }
 
+// ── WebSocket Handler (UPDATED FOR TWO-WAY) ──────────────────────────
 static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
-                      AwsEventType type, void*, uint8_t* data, size_t len) {
+                      AwsEventType type, void* arg, uint8_t* data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     Serial.printf("[ws] client %u from %s\n",
                   client->id(), client->remoteIP().toString().c_str());
   } else if (type == WS_EVT_DISCONNECT) {
     Serial.printf("[ws] client %u gone\n", client->id());
+  } else if (type == WS_EVT_DATA) {
+    // ── NEW: ROUTE WEB COMMANDS TO STM32 ──
+    AwsFrameInfo *info = (AwsFrameInfo*)arg;
+    
+    // Make sure it's text data from a single frame
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+      // Push the payload (e.g. "P:1.5\n") directly out the UART to STM32
+      Serial1.write(data, len); 
+    }
   }
 }
 
-// ── Minimal live view ────────────────────────────────────────────────
+// ── Minimal live view (UPDATED UI) ───────────────────────────────────
 static const char INDEX_HTML[] PROGMEM = R"PAGE(<!doctype html><meta charset=utf-8><title>Botato</title>
 <style>
  body{background:#0d0d10;color:#ddd;font:14px system-ui,sans-serif;margin:0;padding:20px}
@@ -75,6 +85,10 @@ static const char INDEX_HTML[] PROGMEM = R"PAGE(<!doctype html><meta charset=utf
  #nav{font-size:11px;color:#888}
  #log{margin:24px auto 0;max-width:760px;height:150px;overflow:auto;
       white-space:pre;color:#666;font:11px ui-monospace,monospace}
+ 
+ /* NEW: Tuning Panel Styles */
+ #tune{text-align:center; margin-top:20px; display:flex; gap:15px; justify-content:center;}
+ #tune label{display:flex; flex-direction:column; font-size:12px; color:#aaa; font-weight:600;}
 </style>
 
 <h1>BOTATO — <span id=st>connecting…</span> <span id=hz></span></h1>
@@ -86,6 +100,14 @@ static const char INDEX_HTML[] PROGMEM = R"PAGE(<!doctype html><meta charset=utf
     <div id=nav>–</div>
   </div>
 </div>
+
+<!-- NEW: Tuning Panel HTML -->
+<div id=tune>
+  <label>Kp <input type=range id=kp min=0 max=10 step=0.1 value=1.0><span id=kp_val>1.0</span></label>
+  <label>Ki <input type=range id=ki min=0 max=10 step=0.1 value=0.0><span id=ki_val>0.0</span></label>
+  <label>Kd <input type=range id=kd min=0 max=10 step=0.1 value=0.0><span id=kd_val>0.0</span></label>
+</div>
+
 <div id=log></div>
 
 <script>
@@ -146,6 +168,27 @@ function draw(){
   }
   requestAnimationFrame(draw);
 }
+
+// NEW: Slider transmission logic
+function bindSlider(id, prefix) {
+  const slider = document.getElementById(id);
+  const valDisp = document.getElementById(id + '_val');
+  
+  // Update number while dragging
+  slider.oninput = () => { valDisp.textContent = slider.value; };
+  
+  // Send command over websocket when mouse is released
+  slider.onchange = () => { 
+    if(ws.readyState === 1) { // 1 = WebSocket.OPEN
+       ws.send(prefix + slider.value + '\n');
+    }
+  };
+}
+
+bindSlider('kp', 'P:');
+bindSlider('ki', 'I:');
+bindSlider('kd', 'D:');
+
 draw();
 </script>
 )PAGE";
