@@ -4,27 +4,26 @@
 #include <cmath>
 
 namespace {
-    constexpr float SEARCH_SPEED_MMPS  = 1000.0f;
+    constexpr float SEARCH_SPEED_MMPS  = 1200.0f;   // see note: >450 exceeds hardware
     constexpr float SPEED_SPEED_MMPS   = 1200.0f;
     constexpr float TURN_TOLERANCE_DEG = 5.0f;
     constexpr float TURN_SETTLE_DPS    = 25.0f;
     constexpr uint32_t TURN_TIMEOUT_MS = 3000;
+    constexpr float TURN_ADVANCE_MM    = 10.0f;     // rear-axle offset after a 90 turn
 
-    // Wall-centering gating — thresholds fitted from live ToF logs.
-    constexpr float WC_CORRIDOR_WIDTH_MM = 98.0f;   // LEFT+RIGHT when centred (~98)
-    constexpr float WC_WIDTH_TOL_MM      = 15.0f;   // reject if the sum strays this far
-    constexpr float WC_VALID_MAX_MM      = 120.0f;  // a side reading above this isn't a near wall
-    constexpr float WC_DIAG_MAX_MM       = 150.0f;  // diagonal below this => corridor continues
-    constexpr float WC_MIN_RUN_MM        = 40.0f;   // walls must persist this far before trusting
-    constexpr float WC_ENTRY_MM          = 25.0f;   // skip the cell-entry boundary
-    constexpr float WC_EXIT_MM           = 45.0f;   // skip the cell-exit boundary
-    constexpr float WC_DEADBAND_MM       = 2.0f;    // ignore sub-noise offsets
+    // ---- Dead-end K-turn tuning ----
+    constexpr float DE_SWING_ANGLE_DEG    = 20.0f;  // angle before reversing
+    constexpr float DE_REVERSE_MM         = 50.0f;  // reverse while angled (main clearance knob)
+    constexpr float DE_SETTLE_MM          = 30.0f;  // final reverse to seat in the cell
+    constexpr float DE_SWING_SPEED_DPS    = 90.0f;  // single-wheel swing rate
+    constexpr float DE_REVERSE_SPEED_MMPS = 500.0f;
+    constexpr float DE_SWING_TOL_DEG      = 3.0f;
 
-    constexpr float FRONT_STOP_MM    = 25.0f;   // MEASURE: TOF_FRONT when correctly
-                                                // stopped, centred, wall ahead
+    // ---- Front-wall referencing ----
+    constexpr float FRONT_STOP_MM    = 30.0f;   // TOF_FRONT when correctly stopped
     constexpr float FRONT_REF_MAX_MM = 120.0f;  // only trust the front stop within this
     constexpr float FRONT_SLOW_MM    = 120.0f;  // begin easing off here
-    constexpr float FRONT_MIN_MMPS   = 90.0f;   // creep speed for the final approach
+    constexpr float FRONT_MIN_MMPS   = 90.0f;   // creep speed on final approach
 }
 
 void Navigator::init(ControlLoop* ctrl, WallSensorArray* walls,
@@ -44,7 +43,8 @@ void Navigator::startSearch() {
     searchSpeed_ = SEARCH_SPEED_MMPS;
     ctrl_->resetControllers();
     ctrl_->enable(true);
-    headingRef_ = 0.0f;          // gyro was just zeroed; NORTH == 0
+    headingRef_ = 0.0f;          // gyro just zeroed; NORTH == 0
+    deStep_ = DE_IDLE;
     state_ = SEARCH;
     beginCellSequence();
 }
@@ -56,6 +56,7 @@ void Navigator::startSpeed() {
     ctrl_->resetControllers();
     ctrl_->enable(true);
     headingRef_ = 0.0f;
+    deStep_ = DE_IDLE;
     state_ = SPEED;
     beginCellSequence();
 }
@@ -96,7 +97,6 @@ bool Navigator::decideNextMove() {
     if (!flood_.nextDir(map_, pose_.x, pose_.y, target)) return false;
 
     pendingTurn_ = Planner::turnFor(pose_.facing, target);
-    pendingDir_  = target;
     return true;
 }
 
@@ -105,10 +105,9 @@ bool Navigator::decideNextMove() {
 void Navigator::beginTurn(Turn t) {
     float delta = 0.0f;
     switch (t) {
-        case TURN_LEFT:   delta =  90.0f; break;   // anticlockwise-positive
-        case TURN_RIGHT:  delta = -90.0f; break;
-        case TURN_AROUND: delta = 180.0f; break;
-        default:          delta =   0.0f; break;
+        case TURN_LEFT:  delta =  90.0f; break;   // anticlockwise-positive
+        case TURN_RIGHT: delta = -90.0f; break;
+        default:         delta =   0.0f; break;
     }
     headingRef_ += delta;
     turnTargetHeading_ = headingRef_;
@@ -124,13 +123,12 @@ bool Navigator::turnComplete() {
 
     bool settled = (std::fabs(err) < TURN_TOLERANCE_DEG) &&
                    (std::fabs(ctrl_->pvW()) < TURN_SETTLE_DPS);
-
-    // Timeout guard: never spin forever if the turn can't settle.
     bool timedOut = (HAL_GetTick() - turnStartMs_) > TURN_TIMEOUT_MS;
     return settled || timedOut;
 }
 
-void Navigator::beginDrive() {
+void Navigator::beginDrive(bool afterTurn) {
+    driveFollowsTurn_  = afterTurn;
     cellStartDistance_ = avgDistanceMm();
     ctrl_->driveStraight(searchSpeed_, headingRef_);
     phase_ = DRIVING;
@@ -139,19 +137,134 @@ void Navigator::beginDrive() {
 bool Navigator::driveComplete() {
     const float traveled = avgDistanceMm() - cellStartDistance_;
 
-    // Front-wall referencing: absolute, so a slipped cell can't drift the stop.
-    // Require >0.6 cell travelled so a wall seen at cell entry can't trigger it.
+    // Front wall present => absolute reference, immune to encoder slip.
     if (walls_->ok(cfg::TOF_FRONT) && traveled > maze::CELL_MM * 0.6f) {
         float fd = walls_->distanceMm(cfg::TOF_FRONT);
         if (fd < FRONT_REF_MAX_MM) return fd <= FRONT_STOP_MM;
     }
-    return traveled >= maze::CELL_MM;            // open ahead: dead reckon
+
+    float target = maze::CELL_MM;
+    if (driveFollowsTurn_) target += TURN_ADVANCE_MM;
+    return traveled >= target;
 }
+
+void Navigator::approachSlowdown() {
+    if (!walls_->ok(cfg::TOF_FRONT)) return;
+    float fd = walls_->distanceMm(cfg::TOF_FRONT);
+    if (fd > FRONT_SLOW_MM) return;
+    float k = (fd - FRONT_STOP_MM) / (FRONT_SLOW_MM - FRONT_STOP_MM);
+    if (k < 0.0f) k = 0.0f;
+    if (k > 1.0f) k = 1.0f;
+    float v = FRONT_MIN_MMPS + k * (searchSpeed_ - FRONT_MIN_MMPS);
+    ctrl_->driveStraight(v, headingRef_);
+}
+
+// ---- Dead-end K-turn -------------------------------------------------------
+
+// Pivot about ONE wheel. The mixer gives v_left = v - w*W/2, v_right = v + w*W/2,
+// so v = ±w*W/2 parks one wheel and swings the body about it, producing the
+// lateral offset a centred pivot cannot.
+void Navigator::beginWheelSwing(bool pivotOnLeftWheel, float deltaDeg) {
+    deSwingTargetDeg_ = ctrl_->headingDeg() + deltaDeg;
+
+    const float wDps = (deltaDeg >= 0.0f) ? DE_SWING_SPEED_DPS : -DE_SWING_SPEED_DPS;
+    const float wRad = wDps * 3.14159265f / 180.0f;
+    const float half = cfg::WHEELBASE_MM * 0.5f;
+    const float vMmPerS = pivotOnLeftWheel ? (wRad * half) : (-wRad * half);
+
+    ctrl_->setTargets(vMmPerS, wDps);
+}
+
+bool Navigator::swingComplete() const {
+    return std::fabs(deSwingTargetDeg_ - ctrl_->headingDeg()) < DE_SWING_TOL_DEG;
+}
+
+void Navigator::beginDeadEndReverse(float holdHeadingDeg) {
+    deRefDistance_ = avgDistanceMm();
+    ctrl_->driveStraight(-DE_REVERSE_SPEED_MMPS, holdHeadingDeg);
+}
+
+bool Navigator::deadEndReverseComplete(float distanceMm) const {
+    return (avgDistanceMm() - deRefDistance_) <= -distanceMm;
+}
+
+void Navigator::beginDeadEndTurn() {
+    phase_  = DEAD_END;
+    deStep_ = DE_SWING_OUT_A;
+    // Swing away from the turn side: pivot on the wheel opposite the turn.
+    const float swing = deTurnLeft_ ? DE_SWING_ANGLE_DEG : -DE_SWING_ANGLE_DEG;
+    beginWheelSwing(!deTurnLeft_, swing);
+}
+
+void Navigator::updateDeadEndTurn() {
+    const float swing = deTurnLeft_ ? DE_SWING_ANGLE_DEG : -DE_SWING_ANGLE_DEG;
+
+    switch (deStep_) {
+    case DE_SWING_OUT_A:
+        if (swingComplete()) {
+            beginDeadEndReverse(headingRef_ + swing);
+            deStep_ = DE_REVERSE_A;
+        }
+        break;
+
+    case DE_REVERSE_A:
+        if (deadEndReverseComplete(DE_REVERSE_MM)) {
+            beginWheelSwing(deTurnLeft_, -swing);
+            deStep_ = DE_STRAIGHTEN_A;
+        }
+        break;
+
+    case DE_STRAIGHTEN_A:
+        if (swingComplete()) {
+            headingRef_ += deTurnLeft_ ? 180.0f : -180.0f;
+            turnTargetHeading_ = headingRef_;
+            ctrl_->holdHeading(turnTargetHeading_);
+            turnStartMs_ = HAL_GetTick();
+            deStep_ = DE_ROTATE_180;
+        }
+        break;
+
+    case DE_ROTATE_180:
+        if (turnComplete()) {
+            beginWheelSwing(!deTurnLeft_, swing);
+            deStep_ = DE_SWING_OUT_B;
+        }
+        break;
+
+    case DE_SWING_OUT_B:
+        if (swingComplete()) {
+            beginDeadEndReverse(headingRef_ + swing);
+            deStep_ = DE_REVERSE_B;
+        }
+        break;
+
+    case DE_REVERSE_B:
+        if (deadEndReverseComplete(DE_REVERSE_MM)) {
+            beginWheelSwing(deTurnLeft_, -swing);
+            deStep_ = DE_STRAIGHTEN_B;
+        }
+        break;
+
+    case DE_STRAIGHTEN_B:
+        if (swingComplete()) {
+            beginDeadEndReverse(headingRef_);
+            deStep_ = DE_SETTLE;
+        }
+        break;
+
+    case DE_SETTLE:
+        if (deadEndReverseComplete(DE_SETTLE_MM)) deStep_ = DE_FINISHED;
+        break;
+
+    default:
+        break;
+    }
+}
+
+// ---- Main state machine ----------------------------------------------------
 
 void Navigator::update() {
     if (state_ == IDLE || state_ == DONE) return;
-
-    updateWallCentering();
 
     switch (phase_) {
     case SENSE:
@@ -161,19 +274,30 @@ void Navigator::update() {
 
     case DECIDE:
         if (!decideNextMove()) { goalOrReturnTransition(); break; }
-        if (pendingTurn_ == TURN_NONE) beginDrive();
-        else                          beginTurn(pendingTurn_);
+        if      (pendingTurn_ == TURN_NONE)   beginDrive(false);
+        else if (pendingTurn_ == TURN_AROUND) beginDeadEndTurn();
+        else                                  beginTurn(pendingTurn_);
         break;
 
     case TURNING:
         if (turnComplete()) {
             Planner::applyTurn(pose_, pendingTurn_);
-            beginDrive();
+            beginDrive(true);
+        }
+        break;
+
+    case DEAD_END:
+        updateDeadEndTurn();
+        if (deStep_ == DE_FINISHED) {
+            Planner::applyTurn(pose_, TURN_AROUND);
+            deTurnLeft_ = !deTurnLeft_;   // alternate side so errors cancel
+            deStep_ = DE_IDLE;
+            beginDrive(false);
         }
         break;
 
     case DRIVING:
-    	approachSlowdown();
+        approachSlowdown();
         if (driveComplete()) {
             Planner::stepForward(pose_);
             phase_ = ARRIVE;
@@ -195,67 +319,4 @@ void Navigator::goalOrReturnTransition() {
         ctrl_->enable(false);
         state_ = DONE;
     }
-}
-
-void Navigator::updateWallCentering() {
-    const float posInCell = avgDistanceMm() - cellStartDistance_;
-
-    // 1) Only mid-cell while driving, clear of the entry/exit boundaries.
-    const bool inWindow = (phase_ == DRIVING) &&
-                          (posInCell > WC_ENTRY_MM) &&
-                          (posInCell < maze::CELL_MM - WC_EXIT_MM);
-
-    // 2) Both side walls actually beside us now.
-    const float ld = walls_->distanceMm(cfg::TOF_LEFT);
-    const float rd = walls_->distanceMm(cfg::TOF_RIGHT);
-    const bool sidesSeen = walls_->ok(cfg::TOF_LEFT)  && ld < WC_VALID_MAX_MM &&
-                           walls_->ok(cfg::TOF_RIGHT) && rd < WC_VALID_MAX_MM;
-
-    // 3) Width invariant: two real parallel walls sum to a fixed gap, regardless
-    //    of how off-centre we are. A stub or an angled opening breaks it.
-    const bool widthOk =
-        std::fabs((ld + rd) - WC_CORRIDOR_WIDTH_MM) < WC_WIDTH_TOL_MM;
-
-    // 4) Look-ahead: the angled sensors see into the next cell. Both must still
-    //    see wall for the corridor to continue ("walls in the next cell too").
-    const bool aheadContinues =
-        walls_->ok(cfg::TOF_LEFTFRONT)  &&
-        walls_->distanceMm(cfg::TOF_LEFTFRONT)  < WC_DIAG_MAX_MM &&
-        walls_->ok(cfg::TOF_RIGHTFRONT) &&
-        walls_->distanceMm(cfg::TOF_RIGHTFRONT) < WC_DIAG_MAX_MM;
-
-    const bool qualified = inWindow && sidesSeen && widthOk && aheadContinues;
-
-    if (!qualified) {
-        wcRunStartDist_ = -1.0f;                 // reset dwell
-        wallErrDbg_ = 0.0f; wallValidDbg_ = false;
-        ctrl_->setWallError(0.0f, false);
-        return;
-    }
-
-    // 5) Dwell: hold everything above for WC_MIN_RUN_MM of travel first.
-    if (wcRunStartDist_ < 0.0f) wcRunStartDist_ = avgDistanceMm();
-    if ((avgDistanceMm() - wcRunStartDist_) < WC_MIN_RUN_MM) {
-        wallValidDbg_ = false;
-        ctrl_->setWallError(0.0f, false);        // still qualifying — don't steer yet
-        return;
-    }
-
-    // 6) +ve error = nearer the right wall => steer left to centre.
-    float err = ld - rd;
-    if (std::fabs(err) < WC_DEADBAND_MM) err = 0.0f;
-
-    wallErrDbg_ = err; wallValidDbg_ = true;
-    ctrl_->setWallError(err, true);
-}
-
-void Navigator::approachSlowdown() {
-    if (!walls_->ok(cfg::TOF_FRONT)) return;
-    float fd = walls_->distanceMm(cfg::TOF_FRONT);
-    if (fd > FRONT_SLOW_MM) return;             // far: full speed
-    float k = (fd - FRONT_STOP_MM) / (FRONT_SLOW_MM - FRONT_STOP_MM);
-    if (k < 0.0f) k = 0.0f;
-    if (k > 1.0f) k = 1.0f;
-    float v = FRONT_MIN_MMPS + k * (searchSpeed_ - FRONT_MIN_MMPS);
-    ctrl_->driveStraight(v, headingRef_);       // re-issue at the tapered speed
 }
