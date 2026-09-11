@@ -62,8 +62,6 @@ bool MazeMap::isVisited(int x, int y) const {
 }
 
 bool MazeMap::isGoal(int x, int y) const {
-    for (int i = 0; i < maze::GOAL_COUNT; ++i)
-        if (maze::GOAL_CELLS[i][0] == x && maze::GOAL_CELLS[i][1] == y)
-            return true;
-    return false;
+    return x >= maze::GOAL_X_MIN && x <= maze::GOAL_X_MAX &&
+           y >= maze::GOAL_Y_MIN && y <= maze::GOAL_Y_MAX;
 }

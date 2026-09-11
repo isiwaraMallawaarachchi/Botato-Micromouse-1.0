@@ -53,7 +53,15 @@ void FloodFill::floodFrom(const MazeMap& map, const int (*targets)[2], int count
 }
 
 void FloodFill::recompute(const MazeMap& map) {
-    floodFrom(map, maze::GOAL_CELLS, maze::GOAL_COUNT);
+    constexpr int GW = maze::GOAL_X_MAX - maze::GOAL_X_MIN + 1;
+    constexpr int GH = maze::GOAL_Y_MAX - maze::GOAL_Y_MIN + 1;
+    int cells[GW * GH][2];
+    int n = 0;
+    for (int x = maze::GOAL_X_MIN; x <= maze::GOAL_X_MAX; ++x)
+        for (int y = maze::GOAL_Y_MIN; y <= maze::GOAL_Y_MAX; ++y) {
+            cells[n][0] = x; cells[n][1] = y; ++n;
+        }
+    floodFrom(map, cells, n);
 }
 
 void FloodFill::recomputeTo(const MazeMap& map, int tx, int ty) {
