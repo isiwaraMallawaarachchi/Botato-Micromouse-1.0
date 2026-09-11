@@ -48,10 +48,10 @@ private:
     uint32_t turnStartMs_ = 0;
     bool  driveFollowsTurn_ = false;
 
-    // ---- Dead-end multi-point (K) turn ----
+    // ---- Dead-end multi-point (K) turn — always turns LEFT ----
     enum DeadEndStep {
         DE_IDLE,
-        DE_SWING_OUT_A,     // angle away from the turn side
+        DE_SWING_OUT_A,     // angle right, away from the turn side
         DE_REVERSE_A,       // reverse while angled -> gains clearance
         DE_STRAIGHTEN_A,    // back to entry heading, now offset
         DE_ROTATE_180,      // the reversal itself
@@ -63,7 +63,6 @@ private:
     };
 
     DeadEndStep deStep_     = DE_IDLE;
-    bool  deTurnLeft_       = true;    // alternates each dead end (error cancelling)
     float deSwingTargetDeg_ = 0.0f;
     float deRefDistance_    = 0.0f;
 

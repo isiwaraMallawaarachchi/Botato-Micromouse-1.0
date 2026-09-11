@@ -4,12 +4,12 @@
 #include <cmath>
 
 namespace {
-    constexpr float SEARCH_SPEED_MMPS  = 1200.0f;   // see note: >450 exceeds hardware
+    constexpr float SEARCH_SPEED_MMPS  = 1200.0f;   // NOTE: >450 exceeds hardware
     constexpr float SPEED_SPEED_MMPS   = 1200.0f;
     constexpr float TURN_TOLERANCE_DEG = 5.0f;
     constexpr float TURN_SETTLE_DPS    = 25.0f;
     constexpr uint32_t TURN_TIMEOUT_MS = 3000;
-    constexpr float TURN_ADVANCE_MM    = 10.0f;     // rear-axle offset after a 90 turn
+    constexpr float TURN_ADVANCE_MM    = 3.0f;      // rear-axle offset after a 90 turn
 
     // ---- Dead-end K-turn tuning ----
     constexpr float DE_SWING_ANGLE_DEG    = 20.0f;  // angle before reversing
@@ -20,10 +20,11 @@ namespace {
     constexpr float DE_SWING_TOL_DEG      = 3.0f;
 
     // ---- Front-wall referencing ----
-    constexpr float FRONT_STOP_MM    = 30.0f;   // TOF_FRONT when correctly stopped
-    constexpr float FRONT_REF_MAX_MM = 120.0f;  // only trust the front stop within this
-    constexpr float FRONT_SLOW_MM    = 120.0f;  // begin easing off here
-    constexpr float FRONT_MIN_MMPS   = 90.0f;   // creep speed on final approach
+    constexpr float FRONT_STOP_MM        = 30.0f;   // TOF_FRONT when correctly stopped
+    constexpr float FRONT_REF_MAX_MM     = 120.0f;  // only trust the front stop within this
+    constexpr float FRONT_ENTRY_GUARD_MM = 40.0f;   // min travel before ToF may end a cell
+    constexpr float FRONT_SLOW_MM        = 120.0f;  // begin easing off here
+    constexpr float FRONT_MIN_MMPS       = 90.0f;   // creep speed on final approach
 }
 
 void Navigator::init(ControlLoop* ctrl, WallSensorArray* walls,
@@ -137,10 +138,12 @@ void Navigator::beginDrive(bool afterTurn) {
 bool Navigator::driveComplete() {
     const float traveled = avgDistanceMm() - cellStartDistance_;
 
-    // Front wall present => absolute reference, immune to encoder slip.
-    if (walls_->ok(cfg::TOF_FRONT) && traveled > maze::CELL_MM * 0.6f) {
-        float fd = walls_->distanceMm(cfg::TOF_FRONT);
-        if (fd < FRONT_REF_MAX_MM) return fd <= FRONT_STOP_MM;
+    // Front wall in range => absolute reference, always wins over the encoder.
+    if (walls_->ok(cfg::TOF_FRONT)) {
+        const float fd = walls_->distanceMm(cfg::TOF_FRONT);
+        if (fd < FRONT_REF_MAX_MM && traveled > FRONT_ENTRY_GUARD_MM) {
+            return fd <= FRONT_STOP_MM;
+        }
     }
 
     float target = maze::CELL_MM;
@@ -159,7 +162,7 @@ void Navigator::approachSlowdown() {
     ctrl_->driveStraight(v, headingRef_);
 }
 
-// ---- Dead-end K-turn -------------------------------------------------------
+// ---- Dead-end K-turn (always LEFT) -----------------------------------------
 
 // Pivot about ONE wheel. The mixer gives v_left = v - w*W/2, v_right = v + w*W/2,
 // so v = ±w*W/2 parks one wheel and swings the body about it, producing the
@@ -191,32 +194,28 @@ bool Navigator::deadEndReverseComplete(float distanceMm) const {
 void Navigator::beginDeadEndTurn() {
     phase_  = DEAD_END;
     deStep_ = DE_SWING_OUT_A;
-    // Swing away from the turn side: pivot on the wheel opposite the turn.
-    const float swing = deTurnLeft_ ? DE_SWING_ANGLE_DEG : -DE_SWING_ANGLE_DEG;
-    beginWheelSwing(!deTurnLeft_, swing);
+    beginWheelSwing(false, DE_SWING_ANGLE_DEG);   // pivot on right wheel, swing +20
 }
 
 void Navigator::updateDeadEndTurn() {
-    const float swing = deTurnLeft_ ? DE_SWING_ANGLE_DEG : -DE_SWING_ANGLE_DEG;
-
     switch (deStep_) {
     case DE_SWING_OUT_A:
         if (swingComplete()) {
-            beginDeadEndReverse(headingRef_ + swing);
+            beginDeadEndReverse(headingRef_ + DE_SWING_ANGLE_DEG);
             deStep_ = DE_REVERSE_A;
         }
         break;
 
     case DE_REVERSE_A:
         if (deadEndReverseComplete(DE_REVERSE_MM)) {
-            beginWheelSwing(deTurnLeft_, -swing);
+            beginWheelSwing(true, -DE_SWING_ANGLE_DEG);
             deStep_ = DE_STRAIGHTEN_A;
         }
         break;
 
     case DE_STRAIGHTEN_A:
         if (swingComplete()) {
-            headingRef_ += deTurnLeft_ ? 180.0f : -180.0f;
+            headingRef_ += 180.0f;                 // always turn left
             turnTargetHeading_ = headingRef_;
             ctrl_->holdHeading(turnTargetHeading_);
             turnStartMs_ = HAL_GetTick();
@@ -226,21 +225,21 @@ void Navigator::updateDeadEndTurn() {
 
     case DE_ROTATE_180:
         if (turnComplete()) {
-            beginWheelSwing(!deTurnLeft_, swing);
+            beginWheelSwing(false, DE_SWING_ANGLE_DEG);
             deStep_ = DE_SWING_OUT_B;
         }
         break;
 
     case DE_SWING_OUT_B:
         if (swingComplete()) {
-            beginDeadEndReverse(headingRef_ + swing);
+            beginDeadEndReverse(headingRef_ + DE_SWING_ANGLE_DEG);
             deStep_ = DE_REVERSE_B;
         }
         break;
 
     case DE_REVERSE_B:
         if (deadEndReverseComplete(DE_REVERSE_MM)) {
-            beginWheelSwing(deTurnLeft_, -swing);
+            beginWheelSwing(true, -DE_SWING_ANGLE_DEG);
             deStep_ = DE_STRAIGHTEN_B;
         }
         break;
@@ -276,7 +275,11 @@ void Navigator::update() {
         if (!decideNextMove()) { goalOrReturnTransition(); break; }
         if      (pendingTurn_ == TURN_NONE)   beginDrive(false);
         else if (pendingTurn_ == TURN_AROUND) beginDeadEndTurn();
-        else                                  beginTurn(pendingTurn_);
+        else {
+            ctrl_->setTargets(0.0f, 0.0f);   // stop
+            HAL_Delay(2000);                 // TEST ONLY — delete these 2 lines after testing
+            beginTurn(pendingTurn_);
+        }
         break;
 
     case TURNING:
@@ -290,7 +293,6 @@ void Navigator::update() {
         updateDeadEndTurn();
         if (deStep_ == DE_FINISHED) {
             Planner::applyTurn(pose_, TURN_AROUND);
-            deTurnLeft_ = !deTurnLeft_;   // alternate side so errors cancel
             deStep_ = DE_IDLE;
             beginDrive(false);
         }
