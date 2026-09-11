@@ -1,0 +1,211 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Botato Telemetry</title>
+<style>
+ body{background:#0d0d10;color:#ddd;font:14px system-ui,sans-serif;margin:0;padding:20px}
+ h1{font-size:15px;font-weight:600;margin:0 0 16px;letter-spacing:.5px}
+ #st{color:#f55} #st.on{color:#5d5}
+ .warn{color:#fa3}
+
+ #wrap{display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap}
+
+ /* ── sensor rig ── */
+ #rig{position:relative;width:460px;height:300px;flex:0 0 auto}
+ .s{position:absolute;width:84px;height:58px;border-radius:10px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);background:#333;
+    box-shadow:0 2px 8px rgba(0,0,0,.4);transition:background .08s linear}
+ .s .n{font-size:10px;opacity:.85;letter-spacing:1px}
+ .s .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums}
+ .s.wall{outline:2px solid #fff;outline-offset:2px}
+ #bodybox{position:absolute;left:155px;top:118px;width:150px;height:150px;
+       background:#1c1c22;border:1px solid #333;border-radius:14px;
+       display:flex;flex-direction:column;align-items:center;justify-content:center}
+ #bodybox .cap{font-size:10px;color:#777;letter-spacing:1px}
+ #phase{font-size:20px;font-weight:700;color:#7ab8ff;margin:4px 0}
+ #nav{font-size:11px;color:#888}
+
+ /* ── event log ── */
+ #events{flex:1 1 420px;min-width:380px;background:#141419;border:1px solid #2a2a33;
+         border-radius:10px;height:420px;overflow:auto;padding:4px 0}
+ #events h2{font:600 11px system-ui;letter-spacing:1px;color:#888;
+            margin:0;padding:10px 14px 8px;position:sticky;top:0;background:#141419}
+ .ev{display:flex;gap:10px;padding:3px 14px;font:12px ui-monospace,monospace;
+     border-left:3px solid transparent}
+ .ev:hover{background:#1b1b22}
+ .ev .t{color:#555;flex:0 0 62px;text-align:right}
+ .ev .msg{color:#cdd}
+ .ev.bad{border-left-color:#f44;background:#2a1414}
+ .ev.bad .msg{color:#ff8080;font-weight:700}
+ .ev.good{border-left-color:#3a8}
+ .ev.info{border-left-color:#456}
+ .ev.gap{border-left-color:#fa3;background:#2a2114}
+ .ev.gap .msg{color:#fc6}
+
+ /* ── raw ── */
+ #raw{margin-top:20px;height:110px;overflow:auto;white-space:pre;
+      color:#555;font:11px ui-monospace,monospace;
+      background:#111116;border:1px solid #22222a;border-radius:8px;padding:8px}
+ details summary{cursor:pointer;color:#777;font-size:12px;margin-top:18px}
+</style>
+</head>
+<body>
+
+<h1>BOTATO — <span id="st">connecting…</span> <span id="hz"></span>
+    <span id="lost" class="warn"></span></h1>
+
+<div id="wrap">
+  <div id="rig">
+    <div id="bodybox">
+      <div class="cap">DOING</div>
+      <div id="phase">–</div>
+      <div id="nav">–</div>
+    </div>
+  </div>
+
+  <div id="events"><h2>DECISION LOG</h2></div>
+</div>
+
+<details>
+  <summary>raw stream</summary>
+  <div id="raw"></div>
+</details>
+
+<script>
+// ─────────── EDIT THIS ONE LINE ───────────
+const ESP32 = '192.168.8.193';     // or the IP, e.g. '192.168.8.125'
+// ──────────────────────────────────────────
+
+const POS = [
+  ['L',    5, 160],
+  ['LF',  55,  50],
+  ['F',  188,   0],
+  ['RF', 321,  50],
+  ['R',  371, 160],
+];
+const PHASE = ['SENSE','DECIDE','TURNING','DRIVING','ARRIVE'];
+const NAV   = ['IDLE','SEARCH','RETURN','SPEED','DONE'];
+const MODE  = ['IDLE','CALIBRATING','SEARCH_RUN','SPEED_RUN'];
+const DIR   = ['N','E','S','W'];
+const TURN  = ['NONE','LEFT','RIGHT','AROUND'];
+const MAXMM = 400;
+
+const rig = document.getElementById('rig');
+POS.forEach(([name,x,y],i)=>{
+  const d=document.createElement('div');
+  d.className='s'; d.id='s'+i;
+  d.style.left=x+'px'; d.style.top=y+'px';
+  d.innerHTML='<span class="n">'+name+'</span><span class="v" id="v'+i+'">–</span>';
+  rig.appendChild(d);
+});
+
+const st=document.getElementById('st'), hz=document.getElementById('hz'),
+      raw=document.getElementById('raw'), phaseEl=document.getElementById('phase'),
+      navEl=document.getElementById('nav'), evBox=document.getElementById('events'),
+      lostEl=document.getElementById('lost');
+
+let lastT=null, evQueue=[], count=0, lastSeq=0;
+setInterval(()=>{ hz.textContent=count+' Hz'; count=0; },1000);
+
+// Turn one event message into [cssClass, text].
+function describe(e){
+  const a=e.a, b=e.b, c=e.c;
+  switch(e.t){
+    case 0: return ['info','BOOT — firmware started'];
+    case 1: return ['info','MODE  → '+(MODE[a]??a)];
+    case 2: {
+      const w=[]; if(a&1)w.push('L'); if(a&2)w.push('F'); if(a&4)w.push('R');
+      return ['', 'SENSE  ('+b+','+c+')  walls: '+(w.join(' ')||'none')];
+    }
+    case 3: return ['', 'DECIDE → head '+(DIR[a]??a)+'   turn '+(TURN[b]??b)];
+    case 4: return ['', 'TURN   '+(TURN[a]??a)+' — begin'];
+    case 5: return a ? ['good','TURN   settled  (err '+(b/10).toFixed(1)+'°)']
+                     : ['bad', 'TURN   TIMED OUT — carried on with wrong heading '
+                               +'(err '+(b/10).toFixed(1)+'°)'];
+    case 6: return ['', 'DRIVE  begin  '+a+' mm/s'];
+    case 7: return ['', 'DRIVE  done   '+a+' mm'];
+    case 8: return ['', 'ARRIVE ('+a+','+b+')  facing '+(DIR[c]??c)];
+    case 9: return ['good','GOAL REACHED'];
+    case 10:return ['info','STATE → '+(NAV[a]??a)];
+    case 11:return ['bad', 'ABORT'];
+    case 12:return ['bad', 'ERROR  code '+a];
+    default:return ['', 'event t='+e.t+' a='+a+' b='+b+' c='+c];
+  }
+}
+
+function addRow(cls,text,ms){
+  const d=document.createElement('div');
+  d.className='ev '+cls;
+  d.innerHTML='<span class="t">'+(ms/1000).toFixed(2)+'</span>'+
+              '<span class="msg"></span>';
+  d.querySelector('.msg').textContent=text;
+  evBox.appendChild(d);
+  while(evBox.children.length>300) evBox.removeChild(evBox.children[1]); // keep <h2>
+  evBox.scrollTop=evBox.scrollHeight;
+}
+
+function connect(){
+  const ws=new WebSocket('ws://'+ESP32+'/ws');
+  ws.onopen   =()=>{ st.textContent='live'; st.className='on'; };
+  ws.onmessage=e =>{
+    count++;
+    // Events are rare and must never be missed, so queue them all.
+    // Telemetry is 50Hz and droppable, so only the newest is kept.
+    if(e.data.indexOf('"k":"e"')>0) evQueue.push(e.data); else lastT=e.data;
+  };
+  ws.onclose  =()=>{
+    st.textContent='disconnected — retrying'; st.className='';
+    setTimeout(connect,2000);
+  };
+  ws.onerror  =()=>ws.close();
+}
+connect();
+
+function draw(){
+  // ── events: drain every one ──
+  while(evQueue.length){
+    const line=evQueue.shift();
+    try{
+      const e=JSON.parse(line);
+      // A gap in n means events were lost; the picture may be stale.
+      if(lastSeq && e.n !== lastSeq+1)
+        addRow('gap','⚠ '+(e.n-lastSeq-1)+' event(s) LOST — log is incomplete',e.ms);
+      lastSeq=e.n;
+      const [cls,txt]=describe(e);
+      addRow(cls,txt,e.ms);
+    }catch(err){}
+    appendRaw(line);
+  }
+
+  // ── telemetry: newest only ──
+  if(lastT){
+    try{
+      const m=JSON.parse(lastT);
+      if(m.k==='t'){
+        for(let i=0;i<5;i++){
+          const mm=m.d[i];
+          const hue=Math.min(mm/MAXMM,1)*120;      // 0=red .. 120=green
+          const box=document.getElementById('s'+i);
+          box.style.background='hsl('+hue+' 68% 42%)';
+          box.className='s'+(((m.wm>>i)&1)?' wall':'');
+          document.getElementById('v'+i).textContent=mm;
+        }
+        phaseEl.textContent = PHASE[m.np] ?? '?';
+        navEl.textContent   = (NAV[m.ns] ?? '?')+' · '+(MODE[m.md] ?? '?');
+      }
+    }catch(err){}
+    appendRaw(lastT);
+    lastT=null;
+  }
+  requestAnimationFrame(draw);
+}
+function appendRaw(s){
+  if(raw.textContent.length>20000) raw.textContent='';
+  raw.textContent+=s+'\n'; raw.scrollTop=raw.scrollHeight;
+}
+draw();
+</script>
+</body>
+</html>

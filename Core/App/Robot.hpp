@@ -10,6 +10,7 @@
 #include "ButtonManager.hpp"
 #include "ModeController.hpp"
 #include "Navigator.hpp"
+#include "telemetry/Telemetry.hpp"
 
 /*
  * Robot — top-level facade. Owns every subsystem, wires them together, and
@@ -36,6 +37,7 @@ public:
     ModeController&    modes()     { return modes_; }
     Navigator& 		   navigator() { return navigator_; }
     Indicator& 		   led() 	   { return led_; }
+    Telemetry&         telem()     { return telemetry; }
 
 
 private:

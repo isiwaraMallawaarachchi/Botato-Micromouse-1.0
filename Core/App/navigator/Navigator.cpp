@@ -1,6 +1,7 @@
 #include "Navigator.hpp"
 #include "Config.h"
 #include "MazeConfig.h"
+#include "telemetry/Telemetry.hpp"
 #include <cmath>
 
 namespace {
@@ -47,6 +48,7 @@ void Navigator::startSearch() {
     deStep_ = DE_IDLE;
     state_ = SEARCH;
     beginCellSequence();
+    telemetry.event(EV_STATE, (int)state_);
 }
 
 void Navigator::startSpeed() {
@@ -59,11 +61,14 @@ void Navigator::startSpeed() {
     deStep_ = DE_IDLE;
     state_ = SPEED;
     beginCellSequence();
+    telemetry.event(EV_STATE, (int)state_);
 }
 
 void Navigator::abort() {
     ctrl_->enable(false);
     state_ = IDLE;
+    telemetry.event(EV_ABORT);
+    telemetry.event(EV_STATE, (int)state_);
 }
 
 void Navigator::beginCellSequence() { phase_ = SENSE; }
@@ -82,6 +87,9 @@ void Navigator::senseWalls() {
     if (wallRight) map_.setWall(pose_.x, pose_.y, right);
 
     map_.markVisited(pose_.x, pose_.y);
+    telemetry.event(EV_SENSE,
+        (wallLeft ? 1 : 0) | (wallFront ? 2 : 0) | (wallRight ? 4 : 0),
+        pose_.x, pose_.y);
 }
 
 bool Navigator::decideNextMove() {
@@ -97,6 +105,8 @@ bool Navigator::decideNextMove() {
     if (!flood_.nextDir(map_, pose_.x, pose_.y, target)) return false;
 
     pendingTurn_ = Planner::turnFor(pose_.facing, target);
+    pendingDir_  = target;
+    telemetry.event(EV_DECIDE, (int)target, (int)pendingTurn_);
     return true;
 }
 
@@ -114,6 +124,7 @@ void Navigator::beginTurn(Turn t) {
     ctrl_->holdHeading(turnTargetHeading_);
     turnStartMs_ = HAL_GetTick();
     phase_ = TURNING;
+    telemetry.event(EV_TURN_BEGIN, (int)t);
 }
 
 bool Navigator::turnComplete() {
@@ -124,7 +135,14 @@ bool Navigator::turnComplete() {
     bool settled = (std::fabs(err) < TURN_TOLERANCE_DEG) &&
                    (std::fabs(ctrl_->pvW()) < TURN_SETTLE_DPS);
     bool timedOut = (HAL_GetTick() - turnStartMs_) > TURN_TIMEOUT_MS;
-    return settled || timedOut;
+
+    if (settled || timedOut) {
+        // a=0 means the turn NEVER CONVERGED and we carried on with a wrong
+        // heading. Silent failure today; a red row in the log from now on.
+        telemetry.event(EV_TURN_END, settled ? 1 : 0, (int)(err * 10.0f));
+        return true;
+    }
+    return false;
 }
 
 void Navigator::beginDrive(bool afterTurn) {
@@ -132,6 +150,7 @@ void Navigator::beginDrive(bool afterTurn) {
     cellStartDistance_ = avgDistanceMm();
     ctrl_->driveStraight(searchSpeed_, headingRef_);
     phase_ = DRIVING;
+    telemetry.event(EV_DRIVE_BEGIN, (int)searchSpeed_);
 }
 
 bool Navigator::driveComplete() {
@@ -299,12 +318,15 @@ void Navigator::update() {
     case DRIVING:
         approachSlowdown();
         if (driveComplete()) {
+            telemetry.event(EV_DRIVE_END,
+                            (int)(avgDistanceMm() - cellStartDistance_));
             Planner::stepForward(pose_);
             phase_ = ARRIVE;
         }
         break;
 
     case ARRIVE:
+        telemetry.event(EV_ARRIVE, pose_.x, pose_.y, (int)pose_.facing);
         beginCellSequence();
         break;
     }
@@ -312,11 +334,14 @@ void Navigator::update() {
 
 void Navigator::goalOrReturnTransition() {
     if (state_ == SEARCH) {
+        telemetry.event(EV_GOAL, (int)state_);
         state_ = RETURN;
+        telemetry.event(EV_STATE, (int)state_);
         beginCellSequence();
     } else {
         ctrl_->setTargets(0.0f, 0.0f);
         ctrl_->enable(false);
         state_ = DONE;
+        telemetry.event(EV_STATE, (int)state_);
     }
 }
