@@ -31,10 +31,10 @@
  * Don't enable two motion tests at once. */
 //#define RUN_TEST_ENCODER
 //#define RUN_TEST_GYRO
-#define RUN_TEST_TOF
+//#define RUN_TEST_TOF
 //#define RUN_TEST_MOTOR
 //#define RUN_TEST_DRIVE
-//#define RUN_TEST_MODES
+#define RUN_TEST_MODES
 //#define P2_TEST_PIVOT
 //#define P2_TEST_DRIVE
 

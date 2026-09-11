@@ -64,8 +64,8 @@ private:
     bool enabled_ = false;
 
     PIDController pidX_{4.0f, 0.15f, 0.0f, 400.0f};
-    PIDController pidW_{65.0f, 0.0f, 200.0f, 400.0f};
-    PIDController pidHeading_{8.0f, 0.0f, 0.5f, 200.0f};
+    PIDController pidW_{100.0f, 0.0f, 200.0f, 400.0f};
+    PIDController pidHeading_{4.0f, 0.0f, 0.5f, 200.0f};
     PIDController pidWall_{0.8f, 0.0f, 0.8f, 20.0f};  // wall offset: mm error -> deg of heading lean
 };
 
