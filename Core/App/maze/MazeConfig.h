@@ -16,8 +16,8 @@
 namespace maze {
 
 // ---- Maze size ---- (competition = 16x16; use smaller for a test maze)
-constexpr int WIDTH  = 8;
-constexpr int HEIGHT = 8;
+constexpr int WIDTH  = 16;
+constexpr int HEIGHT = 16;
 
 // Max supported size for static arrays. Keep >= WIDTH/HEIGHT. 16 is safe.
 constexpr int MAX_DIM = 16;
@@ -31,10 +31,10 @@ constexpr float START_HEADING_DEG = 0.0f;   // facing NORTH out of the start cel
 // Inclusive bounding box. ANY cell inside counts as "goal reached", so the bot
 // stops at the first mouth it enters and turns back. Edit these 4 numbers to
 // retarget any maze; for a 1x1 goal set min == max on both axes.
-constexpr int GOAL_X_MIN = 3;
-constexpr int GOAL_X_MAX = 4;
-constexpr int GOAL_Y_MIN = 3;
-constexpr int GOAL_Y_MAX = 4;
+constexpr int GOAL_X_MIN = 7;
+constexpr int GOAL_X_MAX = 8;
+constexpr int GOAL_Y_MIN = 7;
+constexpr int GOAL_Y_MAX = 8;
 
 // ---- Physical cell size (mm) ----
 constexpr float CELL_MM = 180.0f;

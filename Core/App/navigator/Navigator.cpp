@@ -12,19 +12,34 @@ namespace {
     constexpr float TURN_ADVANCE_MM    = 3.0f;      // rear-axle offset after a 90 turn
 
     // ---- Dead-end K-turn tuning ----
-    constexpr float DE_SWING_ANGLE_DEG    = 20.0f;  // angle before reversing
-    constexpr float DE_REVERSE_MM         = 50.0f;  // reverse while angled (main clearance knob)
-    constexpr float DE_SETTLE_MM          = 30.0f;  // final reverse to seat in the cell
-    constexpr float DE_SWING_SPEED_DPS    = 90.0f;  // single-wheel swing rate
+    constexpr float DE_SWING_ANGLE_DEG    = 20.0f;
+    constexpr float DE_REVERSE_MM         = 50.0f;  // main clearance knob
+    constexpr float DE_SETTLE_MM          = 30.0f;
+    constexpr float DE_SWING_SPEED_DPS    = 90.0f;
     constexpr float DE_REVERSE_SPEED_MMPS = 500.0f;
     constexpr float DE_SWING_TOL_DEG      = 3.0f;
 
     // ---- Front-wall referencing ----
-    constexpr float FRONT_STOP_MM        = 30.0f;   // TOF_FRONT when correctly stopped
-    constexpr float FRONT_REF_MAX_MM     = 120.0f;  // only trust the front stop within this
-    constexpr float FRONT_ENTRY_GUARD_MM = 40.0f;   // min travel before ToF may end a cell
-    constexpr float FRONT_SLOW_MM        = 120.0f;  // begin easing off here
-    constexpr float FRONT_MIN_MMPS       = 90.0f;   // creep speed on final approach
+    constexpr float FRONT_STOP_MM        = 30.0f;
+    constexpr float FRONT_REF_MAX_MM     = 120.0f;
+    constexpr float FRONT_ENTRY_GUARD_MM = 10.0f;
+    constexpr float FRONT_SLOW_MM        = 120.0f;
+    constexpr float FRONT_MIN_MMPS       = 90.0f;
+
+    // ---- Lateral centring ----
+    constexpr float WC_CORRIDOR_WIDTH_MM = 98.0f;   // LEFT+RIGHT sum when centred
+    constexpr float WC_HALF_WIDTH_MM     = WC_CORRIDOR_WIDTH_MM * 0.5f;
+    constexpr float WC_WIDTH_TOL_MM      = 15.0f;   // both-wall sanity check
+    constexpr float WC_VALID_MAX_MM      = 120.0f;  // above this isn't a near wall
+    constexpr float WC_CENTER_TRIM_MM    = 0.0f;    // MEASURE: (left-right) when centred
+    constexpr float WC_DEADBAND_MM       = 2.0f;
+    constexpr float WC_MAX_OFFSET_DEG    = 12.0f;   // cap the centring lean
+    constexpr float WC_ENTRY_MM          = 20.0f;   // post gate at cell entry
+    constexpr float WC_EXIT_MM           = 40.0f;   // post gate at cell exit
+
+    // Confidence weights (guide 5.3). One wall is a weaker reference than two.
+    constexpr float WC_GAIN_BOTH_WALLS   = 1.00f;
+    constexpr float WC_GAIN_ONE_WALL     = 0.75f;
 }
 
 void Navigator::init(ControlLoop* ctrl, WallSensorArray* walls,
@@ -46,6 +61,8 @@ void Navigator::startSearch() {
     ctrl_->enable(true);
     headingRef_ = 0.0f;          // gyro just zeroed; NORTH == 0
     deStep_ = DE_IDLE;
+    cellCarryMm_ = 0.0f;
+    pidWall_.reset();
     state_ = SEARCH;
     beginCellSequence();
 }
@@ -58,6 +75,8 @@ void Navigator::startSpeed() {
     ctrl_->enable(true);
     headingRef_ = 0.0f;
     deStep_ = DE_IDLE;
+    cellCarryMm_ = 0.0f;
+    pidWall_.reset();
     state_ = SPEED;
     beginCellSequence();
 }
@@ -110,11 +129,17 @@ void Navigator::beginTurn(Turn t) {
         case TURN_RIGHT: delta = -90.0f; break;
         default:         delta =   0.0f; break;
     }
-    headingRef_ += delta;
+    beginRelativeTurn(delta);
+    phase_ = TURNING;
+}
+
+// Command a relative turn and arm the timeout. Keep |deltaDeg| well under 180
+// so the heading-error wrap can't flip the direction.
+void Navigator::beginRelativeTurn(float deltaDeg) {
+    headingRef_ += deltaDeg;
     turnTargetHeading_ = headingRef_;
     ctrl_->holdHeading(turnTargetHeading_);
     turnStartMs_ = HAL_GetTick();
-    phase_ = TURNING;
 }
 
 bool Navigator::turnComplete() {
@@ -129,8 +154,15 @@ bool Navigator::turnComplete() {
 }
 
 void Navigator::beginDrive(bool afterTurn) {
-    driveFollowsTurn_  = afterTurn;
-    cellStartDistance_ = avgDistanceMm();
+    driveFollowsTurn_ = afterTurn;
+
+    // Carry the previous cell's overshoot so distance error doesn't compound
+    // across a long straight run (guide 15). A turn or a front-wall stop
+    // re-references the position, so the carry is dropped there.
+    cellStartDistance_ = avgDistanceMm() - cellCarryMm_;
+    cellCarryMm_ = 0.0f;
+
+    pidWall_.reset();               // no stale integral from the previous cell
     ctrl_->driveStraight(searchSpeed_, headingRef_);
     phase_ = DRIVING;
 }
@@ -141,25 +173,100 @@ bool Navigator::driveComplete() {
     // Front wall in range => absolute reference, always wins over the encoder.
     if (walls_->ok(cfg::TOF_FRONT)) {
         const float fd = walls_->distanceMm(cfg::TOF_FRONT);
-        if (fd < FRONT_REF_MAX_MM && traveled > FRONT_ENTRY_GUARD_MM) {
-            return fd <= FRONT_STOP_MM;
+        if (fd > 1.0f && fd < FRONT_REF_MAX_MM && traveled > FRONT_ENTRY_GUARD_MM) {
+            if (fd <= FRONT_STOP_MM) {
+                cellCarryMm_ = 0.0f;
+                return true;
+            }
+            return false;
         }
     }
 
     float target = maze::CELL_MM;
     if (driveFollowsTurn_) target += TURN_ADVANCE_MM;
-    return traveled >= target;
+
+    if (traveled >= target) {
+        cellCarryMm_ = traveled - target;   // remainder into the next cell
+        if (cellCarryMm_ > 30.0f) cellCarryMm_ = 30.0f;   // sanity clamp
+        return true;
+    }
+    return false;
 }
 
-void Navigator::approachSlowdown() {
-    if (!walls_->ok(cfg::TOF_FRONT)) return;
-    float fd = walls_->distanceMm(cfg::TOF_FRONT);
-    if (fd > FRONT_SLOW_MM) return;
-    float k = (fd - FRONT_STOP_MM) / (FRONT_SLOW_MM - FRONT_STOP_MM);
-    if (k < 0.0f) k = 0.0f;
-    if (k > 1.0f) k = 1.0f;
-    float v = FRONT_MIN_MMPS + k * (searchSpeed_ - FRONT_MIN_MMPS);
-    ctrl_->driveStraight(v, headingRef_);
+// Lateral centring. A differential drive can only move sideways by leaning,
+// so this returns a small heading offset; the heading loop does the rest.
+// Both walls -> difference. One wall -> hold half the corridor width from it.
+float Navigator::wallCenterOffsetDeg() {
+    const float posInCell = avgDistanceMm() - cellStartDistance_;
+
+    // Post gate: corner pillars corrupt side readings at cell boundaries.
+    const bool inWindow = (posInCell > WC_ENTRY_MM) &&
+                          (posInCell < maze::CELL_MM - WC_EXIT_MM);
+    if (!inWindow) {
+        pidWall_.reset();
+        wallErrDbg_ = 0.0f; wallOffsetDbg_ = 0.0f; wallModeDbg_ = 0;
+        return 0.0f;
+    }
+
+    const float ld = walls_->distanceMm(cfg::TOF_LEFT);
+    const float rd = walls_->distanceMm(cfg::TOF_RIGHT);
+    const bool leftSeen  = walls_->ok(cfg::TOF_LEFT)  && ld < WC_VALID_MAX_MM;
+    const bool rightSeen = walls_->ok(cfg::TOF_RIGHT) && rd < WC_VALID_MAX_MM;
+
+    float err  = 0.0f;
+    float gain = 0.0f;
+
+    if (leftSeen && rightSeen) {
+        // Width invariant: two real parallel walls sum to a constant however
+        // far off-centre we are. A stub or an opening breaks it.
+        if (std::fabs((ld + rd) - WC_CORRIDOR_WIDTH_MM) < WC_WIDTH_TOL_MM) {
+            err  = (ld - rd) - WC_CENTER_TRIM_MM;   // +ve = too close to the right
+            gain = WC_GAIN_BOTH_WALLS;
+            wallModeDbg_ = 1;
+        }
+    } else if (leftSeen) {
+        // Hold half-width from the left wall. x2 keeps the scale identical to
+        // the both-wall error, so one PID tuning covers both cases.
+        err  = 2.0f * (ld - WC_HALF_WIDTH_MM);
+        gain = WC_GAIN_ONE_WALL;
+        wallModeDbg_ = 2;
+    } else if (rightSeen) {
+        err  = 2.0f * (WC_HALF_WIDTH_MM - rd);
+        gain = WC_GAIN_ONE_WALL;
+        wallModeDbg_ = 3;
+    }
+
+    if (gain == 0.0f) {
+        pidWall_.reset();
+        wallErrDbg_ = 0.0f; wallOffsetDbg_ = 0.0f; wallModeDbg_ = 0;
+        return 0.0f;
+    }
+
+    if (std::fabs(err) < WC_DEADBAND_MM) err = 0.0f;
+
+    float off = gain * pidWall_.compute(err);   // +ve error -> lean left (CCW +)
+    if (off >  WC_MAX_OFFSET_DEG) off =  WC_MAX_OFFSET_DEG;
+    if (off < -WC_MAX_OFFSET_DEG) off = -WC_MAX_OFFSET_DEG;
+
+    wallErrDbg_ = err; wallOffsetDbg_ = off;
+    return off;
+}
+
+// One command per pass: tapered speed near a front wall + centring lean.
+void Navigator::driveUpdate() {
+    float v = searchSpeed_;
+
+    if (walls_->ok(cfg::TOF_FRONT)) {
+        const float fd = walls_->distanceMm(cfg::TOF_FRONT);
+        if (fd < FRONT_SLOW_MM) {
+            float k = (fd - FRONT_STOP_MM) / (FRONT_SLOW_MM - FRONT_STOP_MM);
+            if (k < 0.0f) k = 0.0f;
+            if (k > 1.0f) k = 1.0f;
+            v = FRONT_MIN_MMPS + k * (searchSpeed_ - FRONT_MIN_MMPS);
+        }
+    }
+
+    ctrl_->driveStraight(v, headingRef_ + wallCenterOffsetDeg());
 }
 
 // ---- Dead-end K-turn (always LEFT) -----------------------------------------
@@ -194,7 +301,7 @@ bool Navigator::deadEndReverseComplete(float distanceMm) const {
 void Navigator::beginDeadEndTurn() {
     phase_  = DEAD_END;
     deStep_ = DE_SWING_OUT_A;
-    beginWheelSwing(false, DE_SWING_ANGLE_DEG);   // pivot on right wheel, swing +20
+    beginWheelSwing(false, DE_SWING_ANGLE_DEG);   // pivot on right wheel
 }
 
 void Navigator::updateDeadEndTurn() {
@@ -215,15 +322,19 @@ void Navigator::updateDeadEndTurn() {
 
     case DE_STRAIGHTEN_A:
         if (swingComplete()) {
-            headingRef_ += 180.0f;                 // always turn left
-            turnTargetHeading_ = headingRef_;
-            ctrl_->holdHeading(turnTargetHeading_);
-            turnStartMs_ = HAL_GetTick();
-            deStep_ = DE_ROTATE_180;
+            beginRelativeTurn(90.0f);          // first half — unambiguous CCW
+            deStep_ = DE_ROTATE_90A;
         }
         break;
 
-    case DE_ROTATE_180:
+    case DE_ROTATE_90A:
+        if (turnComplete()) {
+            beginRelativeTurn(90.0f);          // second half
+            deStep_ = DE_ROTATE_90B;
+        }
+        break;
+
+    case DE_ROTATE_90B:
         if (turnComplete()) {
             beginWheelSwing(false, DE_SWING_ANGLE_DEG);
             deStep_ = DE_SWING_OUT_B;
@@ -275,16 +386,13 @@ void Navigator::update() {
         if (!decideNextMove()) { goalOrReturnTransition(); break; }
         if      (pendingTurn_ == TURN_NONE)   beginDrive(false);
         else if (pendingTurn_ == TURN_AROUND) beginDeadEndTurn();
-        else {
-            ctrl_->setTargets(0.0f, 0.0f);   // stop
-            HAL_Delay(2000);                 // TEST ONLY — delete these 2 lines after testing
-            beginTurn(pendingTurn_);
-        }
+        else                                  beginTurn(pendingTurn_);
         break;
 
     case TURNING:
         if (turnComplete()) {
             Planner::applyTurn(pose_, pendingTurn_);
+            cellCarryMm_ = 0.0f;        // turn re-references position
             beginDrive(true);
         }
         break;
@@ -294,12 +402,13 @@ void Navigator::update() {
         if (deStep_ == DE_FINISHED) {
             Planner::applyTurn(pose_, TURN_AROUND);
             deStep_ = DE_IDLE;
+            cellCarryMm_ = 0.0f;
             beginDrive(false);
         }
         break;
 
     case DRIVING:
-        approachSlowdown();
+        driveUpdate();
         if (driveComplete()) {
             Planner::stepForward(pose_);
             phase_ = ARRIVE;

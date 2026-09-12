@@ -35,6 +35,12 @@ void WallSensorArray::init(I2C_HandleTypeDef* hi2c) {
     xshut[cfg::TOF_RIGHTFRONT] = { XSHUT_RF_GPIO_Port,    XSHUT_RF_Pin    };
     xshut[cfg::TOF_RIGHT]      = { XSHUT_RIGHT_GPIO_Port, XSHUT_RIGHT_Pin };
 
+    for (int i = 0; i < 5; ++i) {
+        distMm_[i]  = cfg::TOF_NO_TARGET_MM;   // never start at 0
+        present_[i] = false;
+        valid_[i]   = false;
+    }
+
     // Disable all, then bring up one at a time and assign a unique address.
     for (int i = 0; i < 5; ++i)
         HAL_GPIO_WritePin(xshut[i].port, xshut[i].pin, GPIO_PIN_RESET);
@@ -61,22 +67,44 @@ void WallSensorArray::init(I2C_HandleTypeDef* hi2c) {
         }
         VL53L0X_SetTimingBudget(&dev[i], cfg::TOF_TIMING_BUDGET_US);
         VL53L0X_StartContinuous(&dev[i], 0);
-        ok_[i] = true;
+        present_[i] = true;   // NEW
     }
 }
 
 void WallSensorArray::poll() {
+    const uint32_t now = HAL_GetTick();
+
     for (int i = 0; i < 5; ++i) {
-        if (!ok_[i]) continue;
+        if (!present_[i]) { valid_[i] = false; continue; }
+
         uint16_t filtered = 0;
-        if (VL53L0X_ReadRangeContinuousFiltered(&dev[i], &filtered) == HAL_OK) {
+        const HAL_StatusTypeDef st =
+            VL53L0X_ReadRangeContinuousFiltered(&dev[i], &filtered);
+
+        if (st == HAL_OK) {
             float c = CAL_A[i] * static_cast<float>(filtered) + CAL_B[i];
             if (c < 0.0f) c = 0.0f;
-            distMm_[i] = c;
+            distMm_[i]     = c;
+            lastGoodMs_[i] = now;
+            valid_[i]      = true;
+        }
+        else if (st == HAL_ERROR) {
+            // Out of range / no target / bad status. Report FAR, not 0:
+            // a 0 here would read as "wall against the nose" and end a cell.
+            distMm_[i] = cfg::TOF_NO_TARGET_MM;
+            valid_[i]  = false;
+        }
+        else {
+            // HAL_BUSY — no new sample yet. Keep the last value, but expire
+            // it so a stale reading can't masquerade as current.
+            if ((now - lastGoodMs_[i]) > cfg::TOF_STALE_MS) {
+                distMm_[i] = cfg::TOF_NO_TARGET_MM;
+                valid_[i]  = false;
+            }
         }
     }
 }
 
 bool WallSensorArray::wallPresent(int i) const {
-    return ok_[i] && distMm_[i] < cfg::WALL_PRESENT_MM;
+    return valid_[i] && distMm_[i] < cfg::WALL_PRESENT_MM;
 }

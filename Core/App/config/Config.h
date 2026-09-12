@@ -46,6 +46,10 @@ constexpr int      TOF_MEDIAN_WINDOW    = 5;
 constexpr float    WALL_PRESENT_MM      = 100.0f;
 // Readings beyond this are treated as "no wall" and gated out (mm).
 constexpr float    MAX_WALL_DETECT_MM   = 120.0f;
+// No-target sentinel: an out-of-range ToF reports FAR, never 0.
+constexpr float    TOF_NO_TARGET_MM = 8190.0f;
+// A reading older than this is stale and no longer trusted (budget ~33ms).
+constexpr uint32_t TOF_STALE_MS     = 120;
 
 // ToF sensor indices (match XSHUT boot order + PINOUT.md).
 enum ToFIndex { TOF_LEFT = 0, TOF_LEFTFRONT, TOF_FRONT, TOF_RIGHTFRONT, TOF_RIGHT };
