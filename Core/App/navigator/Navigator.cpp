@@ -13,7 +13,7 @@ namespace {
 
     // ---- Dead-end K-turn tuning ----
     constexpr float DE_SWING_ANGLE_DEG    = 20.0f;
-    constexpr float DE_REVERSE_MM         = 50.0f;  // main clearance knob
+    constexpr float DE_REVERSE_MM         = 60.0f;  // main clearance knob
     constexpr float DE_SETTLE_MM          = 30.0f;
     constexpr float DE_SWING_SPEED_DPS    = 90.0f;
     constexpr float DE_REVERSE_SPEED_MMPS = 500.0f;

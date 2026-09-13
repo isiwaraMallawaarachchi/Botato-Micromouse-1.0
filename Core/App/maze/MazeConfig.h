@@ -37,7 +37,7 @@ constexpr int GOAL_Y_MIN = 7;
 constexpr int GOAL_Y_MAX = 8;
 
 // ---- Physical cell size (mm) ----
-constexpr float CELL_MM = 180.0f;
+constexpr float CELL_MM = 187.5f;
 
 } // namespace maze
 
