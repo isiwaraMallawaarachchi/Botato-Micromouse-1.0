@@ -118,7 +118,7 @@ constexpr float WC_BAND_MM         = 25.0f;
 constexpr float WC_JUMP_MM         = 10.0f;
 constexpr float WC_GAIN_BOTH_WALLS = 1.00f;
 constexpr float WC_GAIN_ONE_WALL   = 0.75f;
-constexpr ctrlcfg::Gains WALL_PID  = { 0.35f, 0.004f, 0.10f, 600.0f };    // mm -> deg
+constexpr ctrlcfg::Gains WALL_PID  = { 0.55f, 0.004f, 0.25f, 600.0f };    // mm -> deg
 
 } // namespace navcfg
 

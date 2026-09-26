@@ -47,6 +47,7 @@ void Navigator::begin(State s, float cruise) {
     cacheKey_ = -1;
     sideCellKey_ = -1;
     lastWallMode_ = 0;
+    lastTrim_ = 0.0f;
     pidWall_.reset();
     phase_ = DRIVE;
 }
@@ -399,8 +400,10 @@ float Navigator::wallTrimDeg(float remaining) {
     tel.wallMode = 0;
     tel.wallErrMm = tel.wallTrimDeg = 0.0f;
 
-    // Side-sensor position along the track relative to the target centre.
-    const float pitch = cfg::CELL_PITCH_MM;
+    // Side-sensor position along the track relative to the target centre, in
+    // the robot's own cell length (CELL_TRAVEL_MM): posts sit half a driven
+    // cell either side of a centre, whatever CELL_TRAVEL_ADJUST_MM is.
+    const float pitch = cfg::CELL_TRAVEL_MM;
     const float p = cfg::TOF_SIDE_AHEAD_MM - remaining;
 
     // Which cell are the side sensors beside? The target cell once they have
@@ -457,12 +460,26 @@ float Navigator::wallTrimDeg(float remaining) {
 
     // Switching reference (both / left / right / none) must not carry the old
     // integral and derivative into the new error.
-    if (mode != lastWallMode_) { pidWall_.reset(); lastWallMode_ = mode; }
+    const bool modeChanged = (mode != lastWallMode_);
+    if (modeChanged) { pidWall_.reset(); lastWallMode_ = mode; }
     tel.wallMode = mode;
-    if (mode == 0) return 0.0f;
+    if (mode == 0) { lastTrim_ = 0.0f; return 0.0f; }
     if (std::fabs(err) < navcfg::WC_DEADBAND_MM) err = 0.0f;
 
+    // Run the PID once per NEW side reading (~45Hz per sensor), not once per
+    // main-loop pass. The main loop is fast and irregular; stepping the PID on
+    // it made Ki depend on loop speed and reduced Kd to a one-pass blip. Held
+    // between samples, WALL_PID's gains act at a steady rate and can be tuned.
+    const uint32_t seq = walls_->samples(cfg::TOF_LEFT) + walls_->samples(cfg::TOF_RIGHT);
+    if (seq == wallSeq_ && !modeChanged) {
+        tel.wallErrMm = err;
+        tel.wallTrimDeg = lastTrim_;
+        return lastTrim_;
+    }
+    wallSeq_ = seq;
+
     const float trim = gain * pidWall_.compute(err);   // + = lean left (CCW)
+    lastTrim_ = trim;
     tel.wallErrMm = err;
     tel.wallTrimDeg = trim;
     return trim;                                       // clamped in ControlLoop

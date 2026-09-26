@@ -69,13 +69,31 @@ constexpr float WALL_THICKNESS_MM = 12.0f;
 constexpr float CELL_PITCH_MM     = CORRIDOR_MM + WALL_THICKNESS_MM;      // 192
 
 /* ===========================================================================
- * >>> CELL DISTANCE — the single place to adjust it <<<
+ * >>> CELL DISTANCE ADJUSTMENT — edit ONLY CELL_TRAVEL_ADJUST_MM <<<
  *
- * Distance the robot drives for one cell. Starts at the rule-book pitch. If a
- * long straight in the real maze under- or overshoots, correct it here: it is
- * the only value the navigator and the drive tests use for one cell.
+ * Millimetres ADDED to every cell the robot drives. Positive = drives further
+ * per cell, negative = shorter. Example: the robot ends each cell ~2mm short
+ * -> set +2.0f. The effect adds up along a straight: +2mm per cell is +30mm
+ * over a 15-cell straight.
+ *
+ * Changes ONLY how far the robot drives for "one cell" (and, consistently,
+ * where within that driven cell it expects the corner posts). The maze itself
+ * does not change: MazeConfig.h (size, start, goal), CELL_PITCH_MM,
+ * CORRIDOR_MM, the start offset and all wall thresholds keep the real
+ * dimensions. Stops on a front wall use the front ToF and are unaffected.
+ *
+ * How to find the value (TEST_DRIVE_CELLS, open floor):
+ *     CELL_TRAVEL_ADJUST_MM = 192 x cellTest.travelledMm / tape-measured mm - 192
+ *   e.g. encoders 768, tape 760  ->  192 x 768 / 760 - 192 = +1.9
+ * TEST_DRIVE_CELLS drives DRIVE_CELLS times the adjusted distance, so rerun it
+ * afterwards: the tape should then read DRIVE_CELLS x 192.
  * =========================================================================== */
-constexpr float CELL_TRAVEL_MM    = CELL_PITCH_MM;
+constexpr float CELL_TRAVEL_ADJUST_MM = 3.0f;
+
+constexpr float CELL_TRAVEL_MM    = CELL_PITCH_MM + CELL_TRAVEL_ADJUST_MM;   // do not edit
+
+static_assert(CELL_TRAVEL_ADJUST_MM > -20.0f && CELL_TRAVEL_ADJUST_MM < 20.0f,
+              "CELL_TRAVEL_ADJUST_MM is millimetres PER CELL: a few mm, not a total distance");
 
 /* ---- Control loop / PWM --------------------------------------------------- */
 constexpr float CONTROL_DT_S      = 0.001f;   // TIM3 @ 1kHz
@@ -86,7 +104,7 @@ constexpr int   PWM_MAX           = 4999;     // TIM1 ARR
  * follow the same shape — rate ramps up at TURN_ACCEL to TURN_RATE, then ramps
  * down so the robot arrives on the target angle at zero rate.              */
 constexpr float SEARCH_SPEED_MMPS = 300.0f;
-constexpr float SPEED_RUN_MMPS    = 450.0f;   // keep well under FREE_RUN_MMPS
+constexpr float SPEED_RUN_MMPS    = 525.0f;   // keep well under FREE_RUN_MMPS
 constexpr float ACCEL_MMPS2       = 1500.0f;
 constexpr float DECEL_MMPS2       = 2500.0f;
 constexpr float TURN_RATE_DPS     = 240.0f;

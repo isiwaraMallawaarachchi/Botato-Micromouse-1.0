@@ -108,6 +108,8 @@ private:
     SideTrack side_[2] = {};
     int       sideCellKey_  = -1;
     uint8_t   lastWallMode_ = 0;
+    uint32_t  wallSeq_      = 0;     // side-sensor samples consumed by the wall PID
+    float     lastTrim_     = 0.0f;  // wall PID output, held between samples
 
     float axleMm() const;
     float traveledMm() const { return axleMm() - runStartMm_; }
