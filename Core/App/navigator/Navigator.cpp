@@ -10,8 +10,7 @@
 void Navigator::init(ControlLoop* ctrl, WallSensorArray* walls,
                      Encoder* encL, Encoder* encR) {
     ctrl_ = ctrl; walls_ = walls; encL_ = encL; encR_ = encR;
-    map_.reset();
-    mapReady_ = false;
+    clearMap();
     state_ = IDLE;
     phase_ = FINISHED;
 }
@@ -19,6 +18,9 @@ void Navigator::init(ControlLoop* ctrl, WallSensorArray* walls,
 void Navigator::clearMap() {
     map_.reset();
     mapReady_ = false;
+    otherSide_ = false;
+    startX_    = maze::START_X;
+    tel.otherSide = 0;
 }
 
 float Navigator::axleMm() const {
@@ -28,7 +30,7 @@ float Navigator::axleMm() const {
 void Navigator::begin(State s, float cruise) {
     state_  = s;
     cruise_ = cruise;
-    pose_   = GridPose{ maze::START_X, maze::START_Y, NORTH };
+    pose_   = GridPose{ startX_, maze::START_Y, NORTH };
 
     ctrl_->resetForRun();          // heading 0 == NORTH
     ctrl_->enable(true);
@@ -39,14 +41,14 @@ void Navigator::begin(State s, float cruise) {
     // the start cell is handled exactly like every other cell.
     segmentEndMm_ = navcfg::START_OFFSET_MM;
     decided_ = braking_ = homing_ = false;
+    returnKnown_ = false;
     cacheKey_ = -1;
     pidWall_.reset();
     phase_ = DRIVE;
 }
 
 void Navigator::startSearch() {
-    map_.reset();
-    mapReady_ = false;
+    clearMap();                    // search always starts from the assumption
     begin(SEARCH, cfg::SEARCH_SPEED_MMPS);
 }
 
@@ -176,7 +178,48 @@ float Navigator::frontReferenced(float traveled, float remaining) {
 
 /* ---- sensing and deciding -------------------------------------------------- */
 
+// True when `sensor` sees a clear opening on `side`, but the map says that
+// side is the maze's outer wall. Only a valid, clearly-far reading counts.
+bool Navigator::boundaryOpen(Dir side, int sensor) const {
+    int nx, ny;
+    MazeMap::neighbour(pose_.x, pose_.y, side, nx, ny);
+    if (map_.inBounds(nx, ny)) return false;               // not the boundary
+    return walls_->ok(sensor) && walls_->distanceMm(sensor) > navcfg::OUTER_OPEN_MM;
+}
+
+// The maze is on the other side of the start than assumed. Left and right are
+// physical, so nothing flips: only the start column was wrong. Before this is
+// detected the robot can only have driven straight along its start column (it
+// cannot turn into the real outer wall, and an opening the other way triggers
+// detection), so that column is everything learned. Move it across, keeping
+// every wall exactly as seen; the current cell is re-sensed right after.
+void Navigator::moveStartToOtherSide() {
+    const int from = maze::START_X;
+    const int to   = maze::WIDTH - 1 - maze::START_X;
+    MazeMap old = map_;
+    map_.reset();                               // outer walls in the new frame
+    for (int y = 0; y < maze::HEIGHT; ++y) {
+        if (!old.isVisited(from, y)) continue;
+        for (int d = 0; d < 4; ++d)
+            if (old.hasWall(from, y, static_cast<Dir>(d))) map_.setWall(to, y, static_cast<Dir>(d));
+        map_.markVisited(to, y);
+    }
+    pose_.x    = to + (pose_.x - from);
+    startX_    = to;
+    otherSide_ = true;
+    cacheKey_  = -1;
+    tel.otherSide = 1;
+}
+
 void Navigator::senseWalls() {
+    // Start-corner check first, so the walls below land in the right frame.
+    if (!otherSide_ && state_ == SEARCH) {
+        const Dir f = pose_.facing;
+        if (boundaryOpen(static_cast<Dir>((f + 3) % 4), cfg::TOF_LEFT) ||
+            boundaryOpen(static_cast<Dir>((f + 1) % 4), cfg::TOF_RIGHT))
+            moveStartToOtherSide();
+    }
+
     const Dir f     = pose_.facing;
     const Dir left  = static_cast<Dir>((f + 3) % 4);
     const Dir right = static_cast<Dir>((f + 1) % 4);
@@ -196,10 +239,10 @@ void Navigator::senseWalls() {
 Navigator::Action Navigator::decide() {
     if ((state_ == SEARCH || state_ == SPEED) && map_.isGoal(pose_.x, pose_.y))
         return ACT_GOAL;
-    if (state_ == RETURN && pose_.x == maze::START_X && pose_.y == maze::START_Y)
+    if (state_ == RETURN && pose_.x == startX_ && pose_.y == maze::START_Y)
         return ACT_HOME;
 
-    if (state_ == RETURN) flood_.toCell(map_, maze::START_X, maze::START_Y, false);
+    if (state_ == RETURN) flood_.toCell(map_, startX_, maze::START_Y, returnKnown_);
     else                  flood_.toGoal(map_, state_ == SPEED);
 
     Dir target;
@@ -221,17 +264,16 @@ void Navigator::act(Action a) {
     case ACT_STRAIGHT: nextCell();             break;
 
     case ACT_GOAL:
-        if (state_ == SEARCH) {
-            // Stopped in the goal: plan the way home from right here.
-            state_   = RETURN;
-            cruise_  = cfg::SEARCH_SPEED_MMPS;
-            pending_ = decide();
-            ++decisions_;
-            tel.lastAction = pending_;
-            act(pending_);
-        } else {
-            finish(DONE);                               // speed run complete
-        }
+        // Stopped in the goal. Both runs drive home: a lifted robot costs
+        // +20s (rule 2.4.6.2). After a speed run the map is complete enough,
+        // so go home on explored cells only; after a search keep exploring.
+        returnKnown_ = (state_ == SPEED);
+        state_   = RETURN;
+        cruise_  = cfg::SEARCH_SPEED_MMPS;
+        pending_ = decide();
+        ++decisions_;
+        tel.lastAction = pending_;
+        act(pending_);
         break;
 
     case ACT_HOME:   startHoming();                      break;

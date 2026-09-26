@@ -14,6 +14,9 @@ namespace {
 bool Gyro::init(I2C_HandleTypeDef* hi2c) {
     hi2c_ = hi2c;
     ok_   = false;
+    lost_ = false;
+    failStreak_ = 0;
+    calibrating_ = false;
 
     if (HAL_I2C_IsDeviceReady(hi2c_, ADDR, 3, 100) != HAL_OK) return false;
     if (HAL_I2C_Mem_Read(hi2c_, ADDR, REG_WHO_AM_I, 1, &whoAmI_, 1, 100) != HAL_OK)
@@ -48,6 +51,7 @@ bool Gyro::readRawZ(int16_t& out) const {
 }
 
 void Gyro::update() {
+    ++updates_;
     if (!ok_) return;
 
     int32_t sum = 0;
@@ -58,7 +62,17 @@ void Gyro::update() {
         sum += z;
         ++n;
     }
-    if (n == 0) return;
+    if (n == 0) {
+        // Every read failed. Give up after LOST_TICKS in a row so the robot
+        // reports a fault instead of calibrating (or steering) forever.
+        if (++failStreak_ >= gyrocfg::LOST_TICKS) {
+            ok_ = false;
+            lost_ = true;
+            calibrating_ = false;
+        }
+        return;
+    }
+    failStreak_ = 0;
 
     const float raw = static_cast<float>(sum) / static_cast<float>(n);
 

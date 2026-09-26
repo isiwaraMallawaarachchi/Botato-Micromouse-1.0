@@ -24,6 +24,8 @@ public:
     void update();                        // 1kHz ISR
 
     bool  ok()          const { return ok_; }
+    bool  lost()        const { return lost_; }      // stopped answering after init
+    uint32_t updates()  const { return updates_; }   // ISR calls: proves TIM3 runs
     bool  calibrating() const { return calibrating_; }
     bool  calibrated()  const { return calibrated_; }
     float rateDps()     const { return rateDps_; }
@@ -46,6 +48,9 @@ private:
     float    calSum_      = 0.0f;
     int      calTicks_    = 0;
     uint32_t readErrors_  = 0;
+    uint32_t updates_     = 0;
+    int      failStreak_  = 0;
+    bool     lost_        = false;
 
     bool readRawZ(int16_t& out) const;
 };

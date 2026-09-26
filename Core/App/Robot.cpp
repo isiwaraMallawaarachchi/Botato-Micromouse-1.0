@@ -21,6 +21,14 @@ void Robot::initCore() {
     ctrl_.init(&gyro_, &encL_, &encR_, &drive_);
     ctrl_.enable(false);
 
+    // SysTick must be able to interrupt the TIM3 control ISR. The ISR does an
+    // I2C read; HAL's I2C timeouts count SysTick ticks, and with SysTick below
+    // TIM3 (the CubeMX default: 15 vs 0) the tick never advances inside the
+    // ISR, so a stuck I2C2 bus would hang the robot forever. SysTick's handler
+    // is a few instructions, so the control loop is unaffected.
+    HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(TIM3_IRQn, 1, 0);
+
     coreReady_ = true;
     HAL_TIM_Base_Start_IT(&htim3);       // 1kHz tick starts last
     gyro_.beginCalibration();            // ISR takes it from here

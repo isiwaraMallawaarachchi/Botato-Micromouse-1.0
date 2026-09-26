@@ -56,3 +56,4 @@ bool MazeMap::isGoal(int x, int y) const {
     return x >= maze::GOAL_X_MIN && x <= maze::GOAL_X_MAX &&
            y >= maze::GOAL_Y_MIN && y <= maze::GOAL_Y_MAX;
 }
+

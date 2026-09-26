@@ -28,8 +28,9 @@
  * CELL_TRAVEL_MM, and every stop on a front wall re-anchors to the wall.
  *
  * Dead ends use a single 180-degree pivot, the same as any other turn.
- * After the return leg the robot faces NORTH and backs into the start
- * position, so every run begins from the same pose.
+ * Every run — search AND speed — drives itself back to the start after the
+ * goal (rule 2.4.6.2: lifting it out costs +20s), faces NORTH and backs into
+ * the start position, so every run begins from the same pose.
  */
 class Navigator {
 public:
@@ -58,6 +59,7 @@ public:
         uint8_t  wallL, wallF, wallR;       // last sensed at a decision point
         uint8_t  frontRef;                  // 1 = stop point taken from front ToF
         uint8_t  wallMode;                  // 0 off, 1 both, 2 left, 3 right
+        uint8_t  otherSide;                 // 1 = maze found on the other side of the start
         float    remainingMm, speedCmd, wallErrMm, wallTrimDeg;
         uint32_t decisions;
         int32_t  straightAhead;             // speed run: straight cells ahead
@@ -86,6 +88,9 @@ private:
     bool     braking_       = false;
     bool     homing_        = false;
     bool     mapReady_      = false;
+    bool     otherSide_     = false;        // maze is on the other side of the start
+    bool     returnKnown_   = false;        // return on explored cells only
+    int      startX_        = 0;
     uint32_t decisions_     = 0;
     uint32_t settleStartMs_ = 0;
 
@@ -103,6 +108,8 @@ private:
     void   updateTurn();
     void   updatePark();
     void   senseWalls();
+    bool   boundaryOpen(Dir side, int sensor) const;
+    void   moveStartToOtherSide();
     Action decide();
     void   act(Action a);
     void   startTurn(Turn t);

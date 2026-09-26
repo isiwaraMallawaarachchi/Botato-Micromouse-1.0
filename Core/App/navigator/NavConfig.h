@@ -35,6 +35,12 @@ constexpr float FRONT_WALL_EXPECTED_MM = cfg::CORRIDOR_MM * 0.5f + SENSE_LOOKAHE
                                        - cfg::TOF_FRONT_AHEAD_MM;                  // 64
 constexpr float FRONT_WALL_PRESENT_MM  = 130.0f;   // next wall back reads ~256
 
+/* ---- Start-corner detection ---------------------------------------------
+ * A side opening where the map has the outer wall proves the maze is on the
+ * other side of the start. Must be a VALID reading this far: a real wall
+ * reads ~47mm, the next wall through an opening ~240mm or no target.      */
+constexpr float OUTER_OPEN_MM = 200.0f;
+
 /* ---- Front-wall stop -----------------------------------------------------
  * Stopping on a front wall uses the front ToF (absolute) instead of the
  * encoders, and re-anchors position — every front wall erases drift.

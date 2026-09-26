@@ -23,7 +23,17 @@ void Indicator::set(Pattern p) {
     pattern_ = p;
     step_    = 0;
     lastMs_  = HAL_GetTick();
+    if (p == PASS) flashes_ = 2;
+    if (p == FAIL) flashes_ = 3;
     if (p == BLINK) write(true);     // visible immediately
+}
+
+void Indicator::code(int flashes) {
+    if (pattern_ == CODE && flashes_ == flashes) return;
+    pattern_ = CODE;
+    flashes_ = flashes;
+    step_    = 0;
+    lastMs_  = HAL_GetTick();
 }
 
 void Indicator::pulse() {
@@ -50,12 +60,12 @@ void Indicator::update() {
         write(step_ == 0);
         break;
 
-    case PASS:   // two flashes, pause
-    case FAIL: { // three flashes, pause
-        const int cycle = (pattern_ == PASS) ? 8 : 10;
+    case PASS:   // 2 flashes, pause
+    case FAIL:   // 3 flashes, pause
+    case CODE: { // n flashes, pause
+        const int cycle = flashes_ * 2 + 4;           // flashes, then 4 steps dark
         if (dt >= ledcfg::PATTERN_MS) { lastMs_ = now; step_ = (step_ + 1) % cycle; }
-        const int flashes = (pattern_ == PASS) ? 2 : 3;
-        write(step_ < flashes * 2 && (step_ % 2) == 0);
+        write(step_ < flashes_ * 2 && (step_ % 2) == 0);
         break;
     }
     }

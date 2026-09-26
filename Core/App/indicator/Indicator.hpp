@@ -7,19 +7,21 @@
  * Indicator — status LED, non-blocking. update() every main-loop pass.
  *
  * Competition behaviour:
- *   BLINK   while the gyro calibrates (0.5s on / 0.5s off)
- *   OFF     once calibrated, and whenever idle or running
- *   pulse() one short flash per navigation decision, then back to OFF
- *   FAIL    triple flash: gyro not found (the robot cannot run)
+ *   BLINK      while the gyro calibrates (0.5s on / 0.5s off)
+ *   OFF        once calibrated, and whenever idle or running
+ *   pulse()    one short flash per navigation decision, then back to OFF
+ *   code(n)    fault: n quick flashes, pause, repeat (ModeController::Fault)
+ *   solid ON   Error_Handler (HAL init failure)
  *
- * PASS / FAIL are also the test-build verdicts.
+ * Test builds: PASS = code(2), FAIL = code(3).
  */
 class Indicator {
 public:
-    enum Pattern { OFF, ON, BLINK, PASS, FAIL };
+    enum Pattern { OFF, ON, BLINK, PASS, FAIL, CODE };
 
     void init();
     void set(Pattern p);
+    void code(int flashes);       // fault code: n flashes, pause, repeat
     void pulse();                 // one flash over the current pattern
     void update();
 
@@ -29,6 +31,7 @@ private:
     Pattern  pattern_    = OFF;
     uint32_t lastMs_     = 0;
     int      step_       = 0;
+    int      flashes_    = 0;
     bool     pulsing_    = false;
     uint32_t pulseStart_ = 0;
     void write(bool on);

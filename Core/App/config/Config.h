@@ -28,7 +28,7 @@
  * Uncommented    -> test firmware,        Core/Src/main_test.cpp
  *                   (pick the test with the TEST_* defines in that file)
  * =========================================================================== */
-#define BOTATO_TEST_BUILD
+//#define BOTATO_TEST_BUILD
 
 namespace cfg {
 

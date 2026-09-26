@@ -8,6 +8,12 @@
  *
  * Coordinates: x = column (0 = left), y = row (0 = BOTTOM, the start row).
  * Directions: NORTH = +y. The robot starts facing NORTH out of the start cell.
+ *
+ * Start corner: the robot ASSUMES the maze extends to its right (start cell at
+ * START_X = 0). If it is actually to the left, the navigator detects it from
+ * the first side opening where the map has the outer wall, moves what it has
+ * learned to column WIDTH-1 and carries on — no reprogramming needed after
+ * the maze is revealed.
  */
 namespace maze {
 
@@ -25,6 +31,7 @@ constexpr int GOAL_Y_MIN = 7;
 constexpr int GOAL_Y_MAX = 8;
 
 static_assert(WIDTH <= MAX_DIM && HEIGHT <= MAX_DIM, "maze larger than MAX_DIM");
+static_assert(START_X == 0 || START_X == WIDTH - 1, "start must be in a corner column");
 static_assert(GOAL_X_MIN <= GOAL_X_MAX && GOAL_Y_MIN <= GOAL_Y_MAX, "bad goal box");
 
 } // namespace maze
