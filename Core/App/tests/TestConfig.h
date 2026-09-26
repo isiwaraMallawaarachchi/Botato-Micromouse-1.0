@@ -29,7 +29,7 @@ constexpr int      TURN_CYCLES   = 3;
 constexpr uint32_t TURN_PAUSE_MS = 400;
 
 /* TEST_DRIVE_CELLS — straight run length and cruise speed. */
-constexpr int   DRIVE_CELLS      = 4;
+constexpr int   DRIVE_CELLS      = 15;
 constexpr float DRIVE_SPEED_MMPS = cfg::SEARCH_SPEED_MMPS;
 
 } // namespace testcfg

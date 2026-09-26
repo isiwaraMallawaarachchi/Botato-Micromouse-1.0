@@ -37,12 +37,16 @@ void Navigator::begin(State s, float cruise) {
     runStartMm_ = axleMm();
 
     // First target is the start cell's own centre: the robot is parked with
-    // its tail on the back wall, START_OFFSET_MM short of it. From here on
-    // the start cell is handled exactly like every other cell.
-    segmentEndMm_ = navcfg::START_OFFSET_MM;
+    // its tail on the back wall, START_OFFSET_MM short of it — or PARK_GAP_MM
+    // less if it parked itself there after the previous run. From here on the
+    // start cell is handled exactly like every other cell.
+    segmentEndMm_ = navcfg::START_OFFSET_MM - (selfParked_ ? navcfg::PARK_GAP_MM : 0.0f);
+    selfParked_ = false;
     decided_ = braking_ = homing_ = false;
     returnKnown_ = false;
     cacheKey_ = -1;
+    sideCellKey_ = -1;
+    lastWallMode_ = 0;
     pidWall_.reset();
     phase_ = DRIVE;
 }
@@ -277,7 +281,7 @@ void Navigator::act(Action a) {
         break;
 
     case ACT_HOME:   startHoming();                      break;
-    case ACT_PARKED: mapReady_ = true; finish(DONE);     break;
+    case ACT_PARKED: mapReady_ = true; selfParked_ = true; finish(DONE); break;
     case ACT_STUCK:  finish(STUCK);                      break;
     }
 }
@@ -362,51 +366,100 @@ float Navigator::straightAheadMm() {
 
 /* ---- lateral centring ------------------------------------------------------ */
 
+// Is this side's reading a wall that really continues beside the sensor?
+// s: 0 left, 1 right. known/mapWall: what the map says about that wall.
+bool Navigator::sideUsable(int s, bool known, bool mapWall, float& mm) {
+    SideTrack& t = side_[s];
+    const int sensor = (s == 0) ? cfg::TOF_LEFT : cfg::TOF_RIGHT;
+
+    if (known && !mapWall) return false;            // map: opening here, never follow
+    if (t.latched)         return false;            // wall already seen to end
+    if (!walls_->ok(sensor)) return false;
+
+    mm = walls_->distanceMm(sensor);
+    const float centred = (s == 0) ? navcfg::WC_LEFT_CENTERED_MM : navcfg::WC_RIGHT_CENTERED_MM;
+
+    if (mm > centred + navcfg::WC_BAND_MM) {        // too far to be this corridor's wall
+        if (!known) t.latched = true;               // unexplored: the wall has ended
+        return false;
+    }
+    if (mm < centred - navcfg::WC_BAND_MM) return false;   // implausibly close: skip sample
+
+    if (!known && t.hasLast && (mm - t.lastMm) > navcfg::WC_JUMP_MM) {
+        t.latched = true;                           // sudden step longer: wall end
+        return false;
+    }
+    t.lastMm  = mm;
+    t.hasLast = true;
+    return true;
+}
+
 // Returns a small heading lean; the heading loop does the rest (#28).
 float Navigator::wallTrimDeg(float remaining) {
     tel.wallMode = 0;
     tel.wallErrMm = tel.wallTrimDeg = 0.0f;
 
     // Side-sensor position along the track relative to the target centre.
-    // Corner posts sit on cell boundaries; keep clear of them.
     const float pitch = cfg::CELL_PITCH_MM;
     const float p = cfg::TOF_SIDE_AHEAD_MM - remaining;
+
+    // Which cell are the side sensors beside? The target cell once they have
+    // crossed its boundary, the cell before it until then.
+    int cx = pose_.x, cy = pose_.y;
+    if (p < -0.5f * pitch)
+        MazeMap::neighbour(pose_.x, pose_.y, MazeMap::opposite(pose_.facing), cx, cy);
+    const int key = (cx << 8) | (cy << 2) | pose_.facing;
+    if (key != sideCellKey_) {                      // new cell beside us: re-arm both sides
+        sideCellKey_ = key;
+        side_[0] = SideTrack{};
+        side_[1] = SideTrack{};
+    }
+
+    // Corner posts sit on cell boundaries; keep clear of them.
     float q = std::fmod(p + 0.5f * pitch, pitch);
     if (q < 0.0f) q += pitch;
     const float fromPost = (q < pitch - q) ? q : pitch - q;
 
-    if (fromPost < navcfg::WC_POST_GATE_MM || ctrl_->speedRef() < 1.0f) {
-        pidWall_.reset();
-        return 0.0f;
-    }
+    const Dir  leftDir  = static_cast<Dir>((pose_.facing + 3) % 4);
+    const Dir  rightDir = static_cast<Dir>((pose_.facing + 1) % 4);
+    const bool known    = map_.isVisited(cx, cy);
 
-    const float ld = walls_->distanceMm(cfg::TOF_LEFT);
-    const float rd = walls_->distanceMm(cfg::TOF_RIGHT);
-    const bool  lSeen = walls_->seen(cfg::TOF_LEFT,  navcfg::SIDE_WALL_PRESENT_MM);
-    const bool  rSeen = walls_->seen(cfg::TOF_RIGHT, navcfg::SIDE_WALL_PRESENT_MM);
+    float ld = 0.0f, rd = 0.0f;
+    const bool gated = fromPost < navcfg::WC_POST_GATE_MM || ctrl_->speedRef() < 1.0f;
+    const bool lUse  = !gated && sideUsable(0, known, map_.hasWall(cx, cy, leftDir),  ld);
+    const bool rUse  = !gated && sideUsable(1, known, map_.hasWall(cx, cy, rightDir), rd);
+
+    tel.sideState = static_cast<uint8_t>((lUse ? 1 : 0) | (rUse ? 2 : 0) |
+                                         (side_[0].latched ? 4 : 0) | (side_[1].latched ? 8 : 0) |
+                                         (known ? 16 : 0));
 
     float err = 0.0f, gain = 0.0f;
-    if (lSeen && rSeen) {
+    uint8_t mode = 0;
+    if (lUse && rUse) {
         // Two real parallel walls always sum to the same width, however far
         // off-centre we are; a stub or an opening breaks that.
         if (std::fabs((ld + rd) - navcfg::WC_SUM_CENTERED_MM) < navcfg::WC_WIDTH_TOL_MM) {
             err = (ld - rd) - navcfg::WC_CENTER_TRIM_MM;   // + = drifted right
             gain = navcfg::WC_GAIN_BOTH_WALLS;
-            tel.wallMode = 1;
+            mode = 1;
         }
-    } else if (lSeen) {
+    } else if (lUse) {
         // Hold the distance this side reads when truly centred (includes the
         // measured left/right asymmetry). x2 keeps one PID tuning valid.
         err = 2.0f * (ld - navcfg::WC_LEFT_CENTERED_MM);
         gain = navcfg::WC_GAIN_ONE_WALL;
-        tel.wallMode = 2;
-    } else if (rSeen) {
+        mode = 2;
+    } else if (rUse) {
         err = 2.0f * (navcfg::WC_RIGHT_CENTERED_MM - rd);
         gain = navcfg::WC_GAIN_ONE_WALL;
-        tel.wallMode = 3;
+        mode = 3;
     }
 
-    if (gain == 0.0f) { pidWall_.reset(); tel.wallMode = 0; return 0.0f; }
+    // Switching reference (both / left / right / none) must not carry the old
+    // integral and derivative into the new error.
+    if (mode != lastWallMode_) { pidWall_.reset(); lastWallMode_ = mode; }
+    tel.wallMode = mode;
+    if (mode == 0) return 0.0f;
     if (std::fabs(err) < navcfg::WC_DEADBAND_MM) err = 0.0f;
 
     const float trim = gain * pidWall_.compute(err);   // + = lean left (CCW)

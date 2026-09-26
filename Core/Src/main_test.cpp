@@ -41,14 +41,14 @@
 //#define TEST_I2C_TOF
 //#define TEST_TOF_SINGLE
 //#define TEST_TOF_LIVE
-#define TEST_TOF_CAL
+//#define TEST_TOF_CAL
 //#define TEST_GYRO
 //#define TEST_ENCODER
 //#define TEST_BUTTONS
 //#define TEST_MOTOR
 //#define TEST_HEADING_HOLD
 //#define TEST_TURN
-//#define TEST_DRIVE_CELLS
+#define TEST_DRIVE_CELLS
 //#define TEST_NAV
 
 #if (defined(TEST_I2C_GYRO) + defined(TEST_I2C_TOF) + defined(TEST_TOF_SINGLE) + \

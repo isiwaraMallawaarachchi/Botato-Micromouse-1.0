@@ -44,7 +44,7 @@ constexpr float SENSE_LOOKAHEAD_MM = cfg::TOF_SIDE_AHEAD_MM;                    
  * below the no-wall reading. Check the result live with TEST_TOF_LIVE
  * (tofLive.wallLeft / wallFront / wallRight).
  * =========================================================================== */
-constexpr float SIDE_WALL_PRESENT_MM   = 150.0f;   // wall ~60, no wall ~250
+constexpr float SIDE_WALL_PRESENT_MM   = 120.0f;   // wall ~60, no wall ~250
 constexpr float FRONT_STOP_MM          = 44.0f;    // front reading, centred in cell (measured)
 constexpr float FRONT_WALL_EXPECTED_MM = FRONT_STOP_MM + SENSE_LOOKAHEAD_MM;   // ~74
 constexpr float FRONT_WALL_PRESENT_MM  = 150.0f;   // wall ~74, no wall ~266
@@ -82,7 +82,11 @@ constexpr float    STOP_TOL_MM       = 1.0f;
 constexpr float    SETTLE_MMPS       = 15.0f;
 constexpr uint32_t SETTLE_TIMEOUT_MS = 400;
 constexpr float    PARK_SPEED_MMPS   = 150.0f;
-constexpr float    PARK_GAP_MM       = 3.0f;    // parking stops this short of the back wall
+// Parking stops this short of the back wall. Reversing lands within ~3mm and
+// the robot can sit ~0.5 deg off square, which swings a tail corner ~0.4mm:
+// 8mm keeps clear contact-free. The next run starting from this parked pose
+// accounts for the gap (Navigator::begin).
+constexpr float    PARK_GAP_MM       = 8.0f;
 
 // A search run only learns it must stop when it reaches the decision point,
 // SENSE_LOOKAHEAD_MM before the centre. It must be able to stop in that room.
@@ -102,6 +106,16 @@ constexpr float WC_RIGHT_CENTERED_MM = 0.5f * (WC_SUM_CENTERED_MM - WC_CENTER_TR
 constexpr float WC_WIDTH_TOL_MM    = 15.0f;   // both-wall sanity window
 constexpr float WC_DEADBAND_MM     = 2.0f;
 constexpr float WC_POST_GATE_MM    = 25.0f;   // ignore side walls near a post
+// Wall-end protection. A side is only followed while its wall really
+// continues beside the sensor:
+//  - cell walls already in the map: a side the map marks OPEN is never used;
+//  - cell not yet sensed: the reading must stay within WC_BAND_MM of that
+//    side's centred value and must not jump longer by more than WC_JUMP_MM
+//    between samples. Either one latches that side OFF until the next cell.
+// When a wall ends, the filtered reading steps up by 100+mm in one sample, far
+// above any real sideways drift (< 1mm per sample at search speed).
+constexpr float WC_BAND_MM         = 25.0f;
+constexpr float WC_JUMP_MM         = 10.0f;
 constexpr float WC_GAIN_BOTH_WALLS = 1.00f;
 constexpr float WC_GAIN_ONE_WALL   = 0.75f;
 constexpr ctrlcfg::Gains WALL_PID  = { 0.35f, 0.004f, 0.10f, 600.0f };    // mm -> deg

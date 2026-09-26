@@ -59,6 +59,9 @@ public:
         uint8_t  wallL, wallF, wallR;       // last sensed at a decision point
         uint8_t  frontRef;                  // 1 = stop point taken from front ToF
         uint8_t  wallMode;                  // 0 off, 1 both, 2 left, 3 right
+        uint8_t  sideState;                 // per side, bit0 L / bit1 R: side usable
+                                            //  bit2 L / bit3 R: latched off (wall ended)
+                                            //  bit4: side-sensor cell known from the map
         uint8_t  otherSide;                 // 1 = maze found on the other side of the start
         float    remainingMm, speedCmd, wallErrMm, wallTrimDeg;
         uint32_t decisions;
@@ -90,6 +93,7 @@ private:
     bool     mapReady_      = false;
     bool     otherSide_     = false;        // maze is on the other side of the start
     bool     returnKnown_   = false;        // return on explored cells only
+    bool     selfParked_    = false;        // robot parked itself PARK_GAP_MM off the wall
     int      startX_        = 0;
     uint32_t decisions_     = 0;
     uint32_t settleStartMs_ = 0;
@@ -98,6 +102,12 @@ private:
     int cacheKey_      = -1;
 
     PIDController pidWall_{navcfg::WALL_PID};
+
+    // Wall-end protection, one entry per side (0 left, 1 right).
+    struct SideTrack { float lastMm; bool hasLast; bool latched; };
+    SideTrack side_[2] = {};
+    int       sideCellKey_  = -1;
+    uint8_t   lastWallMode_ = 0;
 
     float axleMm() const;
     float traveledMm() const { return axleMm() - runStartMm_; }
@@ -120,6 +130,7 @@ private:
     float  frontReferenced(float traveled, float remaining);
     float  straightAheadMm();
     float  wallTrimDeg(float remaining);
+    bool   sideUsable(int s, bool known, bool mapWall, float& mm);
     void   publish(float remaining, float v);
 };
 
