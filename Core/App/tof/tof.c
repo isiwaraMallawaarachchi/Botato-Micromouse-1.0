@@ -565,7 +565,7 @@ HAL_StatusTypeDef VL53L0X_ReadRangeContinuousFiltered(VL53L0X_Dev_t *dev, uint16
     uint8_t int_status = 0;
     if (ReadReg8(dev, REG_RESULT_INTERRUPT_STATUS, &int_status) != HAL_OK)
     {
-        return HAL_ERROR;
+        return HAL_TIMEOUT;   /* bus fault, distinct from a bad range status */
     }
     if ((int_status & 0x07) == 0)
     {
@@ -574,16 +574,21 @@ HAL_StatusTypeDef VL53L0X_ReadRangeContinuousFiltered(VL53L0X_Dev_t *dev, uint16
         return HAL_BUSY;
     }
 
-    /* Read the full range-status + distance block. RESULT_RANGE_STATUS is
-     * the status byte; distance is 16-bit big-endian at offset +10.       */
-    uint8_t range_status = 0;
-    ReadReg8(dev, REG_RESULT_RANGE_STATUS, &range_status);
-
-    uint16_t raw = 0;
-    ReadReg16(dev, (uint8_t)(REG_RESULT_RANGE_STATUS + 10), &raw);
+    /* One burst read of the result block: status byte at +0, distance
+     * (16-bit big-endian) at +10. Previously two separate transactions. */
+    uint8_t blk[12];
+    if (ReadMulti(dev, REG_RESULT_RANGE_STATUS, blk, sizeof blk) != HAL_OK)
+    {
+        return HAL_TIMEOUT;
+    }
+    const uint8_t  range_status = blk[0];
+    const uint16_t raw          = (uint16_t)((blk[10] << 8) | blk[11]);
 
     /* Clear the interrupt so the sensor can post the next reading. */
-    WriteReg8(dev, REG_SYSTEM_INTERRUPT_CLEAR, 0x01);
+    if (WriteReg8(dev, REG_SYSTEM_INTERRUPT_CLEAR, 0x01) != HAL_OK)
+    {
+        return HAL_TIMEOUT;
+    }
 
     /* The range status code is in bits [6:3] of RESULT_RANGE_STATUS.
      * Code 11 (0x0B) is a valid measurement; anything else is a fault

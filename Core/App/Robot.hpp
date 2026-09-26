@@ -12,20 +12,23 @@
 #include "Navigator.hpp"
 
 /*
- * Robot — top-level facade. Owns every subsystem, wires them together, and
- * exposes two entry points that main.cpp calls:
- *   onControlTick()  — from the TIM3 1kHz ISR (via HAL callback). Fast, fixed.
- *   onMainLoop()     — from while(1). Non-blocking: sensors, buttons, modes.
+ * Robot — owns every subsystem and wires them together.
  *
- * Keeping this facade means main.cpp stays ~10 lines. All wiring lives here.
+ *   init()          competition: initCore() + navigator + mode controller
+ *   initCore()      hardware + control only; used by the robot-based tests.
+ *                   Starts TIM3 and the gyro calibration (runs in the ISR).
+ *   onControlTick() TIM3 ISR, 1kHz: gyro, encoders, control loop
+ *   onMainLoop()    competition main loop
+ *   serviceCore()   ToF poll, buttons, LED — the part tests also need
  */
 class Robot {
 public:
-    void init();          // full bring-up of every subsystem
-    void onControlTick(); // 1kHz: gyro + encoders + control loop
-    void onMainLoop();    // background: ToF poll, buttons, mode state machine
+    void init();
+    void initCore();
+    void onControlTick();
+    void onMainLoop();
+    void serviceCore();
 
-    // Accessors so test harnesses / debugger can reach the subsystems.
     Encoder&           encoderL()  { return encL_; }
     Encoder&           encoderR()  { return encR_; }
     Gyro&              gyro()      { return gyro_; }
@@ -34,12 +37,10 @@ public:
     ControlLoop&       control()   { return ctrl_; }
     ButtonManager&     buttons()   { return btn_; }
     ModeController&    modes()     { return modes_; }
-    Navigator& 		   navigator() { return navigator_; }
-    Indicator& 		   led() 	   { return led_; }
-
+    Navigator&         navigator() { return navigator_; }
+    Indicator&         led()       { return led_; }
 
 private:
-    Navigator 	      navigator_;
     Encoder           encL_;
     Encoder           encR_;
     Gyro              gyro_;
@@ -47,11 +48,12 @@ private:
     DifferentialDrive drive_;
     ControlLoop       ctrl_;
     ButtonManager     btn_;
+    Indicator         led_;
+    Navigator         navigator_;
     ModeController    modes_;
-    Indicator 		  led_;
+    volatile bool     coreReady_ = false;
 };
 
-// Single global instance (defined in Robot.cpp). No dynamic allocation.
-extern Robot robot;
+extern Robot robot;   // the single instance; no dynamic allocation
 
 #endif // APP_ROBOT_HPP

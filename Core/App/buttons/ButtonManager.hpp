@@ -4,39 +4,43 @@
 #include <cstdint>
 
 /*
- * ButtonManager — debounced edge + long-press + both-press detection for the
- * two mode buttons (PA6 search, PA5 fast). Polled in the main loop.
- * Events are one-shot: read them with the take* methods, which clear the flag.
+ * ButtonManager — two active-low buttons, polled and debounced in the main
+ * loop (DECISIONS.md #6: deliberately not EXTI).
+ *
+ *   PA6 (BTN2) "search":  short press, long press
+ *   PA5 (BTN1) "fast":    short press
+ *   both together:        one both-press event, suppresses the shorts
+ *
+ * Events are one-shot: take*() returns true once, then clears.
  */
 class ButtonManager {
 public:
     void init();
-    void update();   // call every main-loop pass
+    void update();
 
-    // One-shot event getters (return true once, then self-clear).
-    bool takeSearchShort();   // PA6 short press released
-    bool takeFastShort();     // PA5 short press released
-    bool takeSearchLong();    // PA6 held > BTN_LONGPRESS_MS
-    bool takeBothPress();     // both held together
+    bool takeSearchShort();
+    bool takeFastShort();
+    bool takeSearchLong();
+    bool takeBothPress();
+    bool takeAny();              // consumes every pending event
+
+    bool searchHeld() const { return search_.pressed; }
+    bool fastHeld()   const { return fast_.pressed; }
 
 private:
     struct Btn {
-        uint8_t  pressed = 0;       // debounced state
-        uint32_t downTime = 0;      // tick when pressed
-        uint8_t  longFired = 0;     // long event already emitted this hold
+        bool     pressed   = false;
+        uint32_t downTime  = 0;
+        bool     longFired = false;
     };
-    Btn search_;   // PA6
-    Btn fast_;     // PA5
+    Btn search_, fast_;
 
     bool searchShortEvt_ = false;
     bool fastShortEvt_   = false;
     bool searchLongEvt_  = false;
     bool bothEvt_        = false;
-
+    bool bothLatched_    = false;
     uint32_t lastSample_ = 0;
-
-    bool readSearchRaw() const;   // active-low
-    bool readFastRaw()   const;
 };
 
 #endif // APP_BUTTONMANAGER_HPP

@@ -9,8 +9,8 @@ extern "C" {
 
 /*
  * Motor — one TB6612 channel: one PWM timer channel + two direction pins.
- * Direction polarity is INVERTED vs the datasheet truth table to match this
- * board's motor lead wiring (DECISIONS.md #15). Applies dead-band so small
+ * Direction polarity is inverted vs the datasheet truth table to match this
+ * board's lead wiring (DECISIONS.md #15). Applies the dead-band so small
  * commands still overcome static friction.
  */
 class Motor {
@@ -19,9 +19,9 @@ public:
               GPIO_TypeDef* in1Port, uint16_t in1Pin,
               GPIO_TypeDef* in2Port, uint16_t in2Pin);
 
-    // pwm in [-PWM_MAX, +PWM_MAX]. Positive = physical forward.
-    void setPwm(int16_t pwm);
-    void stop();   // coast (both direction pins low)
+    // pwm in [-PWM_MAX, +PWM_MAX], clamped here. Positive = physical forward.
+    void setPwm(int32_t pwm);
+    void stop();   // coast: both direction pins low
 
 private:
     TIM_HandleTypeDef* pwmTim_ = nullptr;

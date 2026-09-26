@@ -1,74 +1,62 @@
-#include <Indicator.hpp>
-extern "C" {
-#include "gpio.h"
-}
-
-/* Blackpill onboard LED is PC13, ACTIVE LOW.
- * If you use a different pin, change these two lines only. */
-#define LED_PORT GPIOC
-#define LED_PIN  GPIO_PIN_13
+#include "Indicator.hpp"
+#include "IndicatorConfig.h"
 
 void Indicator::write(bool on) {
-    // active low: LOW = lit
-    HAL_GPIO_WritePin(LED_PORT, LED_PIN, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    HAL_GPIO_WritePin(ledcfg::PORT, ledcfg::PIN, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
 void Indicator::init() {
-    // PC13 as output. (If CubeMX already configures it, this is harmless.)
     __HAL_RCC_GPIOC_CLK_ENABLE();
-    GPIO_InitTypeDef g = {0};
-    g.Pin   = LED_PIN;
+    GPIO_InitTypeDef g = {};
+    g.Pin   = ledcfg::PIN;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
     g.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(LED_PORT, &g);
+    HAL_GPIO_Init(ledcfg::PORT, &g);
+    pulsing_ = false;
+    set(OFF);
     write(false);
-    pattern_ = OFF;
 }
 
 void Indicator::set(Pattern p) {
+    if (p == pattern_) return;       // re-setting must not restart the cycle
     pattern_ = p;
     step_    = 0;
     lastMs_  = HAL_GetTick();
+    if (p == BLINK) write(true);     // visible immediately
 }
 
-void Indicator::flash(int times, uint32_t onMs, uint32_t offMs) {
-    for (int i = 0; i < times; ++i) {
-        write(true);  HAL_Delay(onMs);
-        write(false); HAL_Delay(offMs);
-    }
+void Indicator::pulse() {
+    pulsing_    = true;
+    pulseStart_ = HAL_GetTick();
+    write(true);
 }
 
 void Indicator::update() {
-    uint32_t now = HAL_GetTick();
-    uint32_t dt  = now - lastMs_;
+    const uint32_t now = HAL_GetTick();
 
+    if (pulsing_) {
+        if (now - pulseStart_ < ledcfg::PULSE_MS) return;
+        pulsing_ = false;            // fall through to the base pattern
+    }
+
+    const uint32_t dt = now - lastMs_;
     switch (pattern_) {
-    case OFF:   write(false); break;
-    case SOLID: write(true);  break;
+    case OFF: write(false); break;
+    case ON:  write(true);  break;
 
-    case SLOW_BLINK:
-        if (dt >= 500) { lastMs_ = now; step_ ^= 1; write(step_); }
+    case BLINK:
+        if (dt >= ledcfg::BLINK_MS) { lastMs_ = now; step_ ^= 1; }
+        write(step_ == 0);
         break;
 
-    case FAST_BLINK:
-        if (dt >= 120) { lastMs_ = now; step_ ^= 1; write(step_); }
+    case PASS:   // two flashes, pause
+    case FAIL: { // three flashes, pause
+        const int cycle = (pattern_ == PASS) ? 8 : 10;
+        if (dt >= ledcfg::PATTERN_MS) { lastMs_ = now; step_ = (step_ + 1) % cycle; }
+        const int flashes = (pattern_ == PASS) ? 2 : 3;
+        write(step_ < flashes * 2 && (step_ % 2) == 0);
         break;
-
-    case DOUBLE_BLINK:   // blink blink ... pause
-        if (dt >= 150) {
-            lastMs_ = now;
-            step_ = (step_ + 1) % 8;
-            write(step_ == 0 || step_ == 2);
-        }
-        break;
-
-    case TRIPLE_BLINK:
-        if (dt >= 150) {
-            lastMs_ = now;
-            step_ = (step_ + 1) % 10;
-            write(step_ == 0 || step_ == 2 || step_ == 4);
-        }
-        break;
+    }
     }
 }

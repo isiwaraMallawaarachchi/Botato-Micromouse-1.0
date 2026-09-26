@@ -27,9 +27,9 @@ extern "C" {
  * and are freed immediately after Init() returns.
  */
 
-/* Size of the median filter window. 3 or 5. 5 rejects more outliers at
- * the cost of slightly more lag; 3 is snappier. Odd numbers only.     */
-#define TOF_MEDIAN_WINDOW 5
+/* Filter configuration (TOF_MEDIAN_WINDOW, TOF_EMA_ALPHA) lives in
+ * ToFConfig.h so every ToF setting is in one place.                   */
+#include "ToFConfig.h"
 
 typedef struct {
     I2C_HandleTypeDef *hi2c;
@@ -46,11 +46,6 @@ typedef struct {
     uint16_t last_raw_mm;                /* most recent raw reading (pre-filter)     */
     uint8_t  last_status;                /* range status of the most recent read     */
 } VL53L0X_Dev_t;
-
-/* EMA smoothing factor, 0..1. Higher = more responsive, less smoothing.
- * 0.5 keeps a newly-appeared wall registering fast while still knocking
- * down jitter. Tune down toward 0.3 for smoother/laggier if needed.   */
-#define TOF_EMA_ALPHA 0.5f
 
 /**
  * Full sensor bring-up: data init, static init (SPAD config + default
@@ -106,12 +101,14 @@ HAL_StatusTypeDef VL53L0X_StopContinuous(VL53L0X_Dev_t *dev);
  * rejected and never pollute the filter, (2) median-of-N to kill
  * outlier spikes, (3) light EMA to smooth residual jitter.
  *
- * out_mm receives the FILTERED distance. Returns HAL_OK when a fresh,
- * good reading was incorporated. Returns HAL_ERROR when the newest
- * reading had bad status (out_mm is left holding the last good filtered
- * value so the caller still has something usable). Returns HAL_BUSY if
- * no new measurement is ready yet (non-blocking — safe to call every
- * loop pass).
+ * out_mm receives the FILTERED distance. Return values:
+ *   HAL_OK      fresh, good reading incorporated
+ *   HAL_ERROR   fresh reading with bad status or out of range (out_mm keeps
+ *               the last good filtered value)
+ *   HAL_BUSY    no new measurement yet (non-blocking — safe every pass)
+ *   HAL_TIMEOUT I2C transaction failed — a BUS fault, not a range fault.
+ *               Kept distinct so callers never mistake a dying link for a
+ *               sensor pointing at open air.
  *
  * Raw and status for the last read are also stored in dev->last_raw_mm
  * and dev->last_status for debugging / display.

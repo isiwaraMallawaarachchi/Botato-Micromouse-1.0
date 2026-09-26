@@ -1,70 +1,81 @@
 #include "ModeController.hpp"
 
-void ModeController::init(ButtonManager* btn, ControlLoop* ctrl, Gyro* gyro, Navigator* nav) {
-    btn_  = btn;
-    ctrl_ = ctrl;
-    gyro_ = gyro;
-    nav_ = nav;
-    enterIdle();
+void ModeController::init(ButtonManager* btn, ControlLoop* ctrl, Gyro* gyro,
+                          Navigator* nav, Indicator* led) {
+    btn_ = btn; ctrl_ = ctrl; gyro_ = gyro; nav_ = nav; led_ = led;
+    ctrl_->enable(false);
+    if (gyro_->ok()) {
+        // Robot::initCore() has already started the boot calibration.
+        if (!gyro_->calibrating() && !gyro_->calibrated()) gyro_->beginCalibration();
+        state_ = CALIBRATING;
+        led_->set(Indicator::BLINK);
+    } else {
+        state_ = FAULT;                 // cannot hold a heading: refuse to run
+        led_->set(Indicator::FAIL);
+    }
+}
+
+void ModeController::calibrate() {
+    ctrl_->enable(false);
+    gyro_->beginCalibration();          // runs in the ISR; main loop stays free
+    state_ = CALIBRATING;
+    led_->set(Indicator::BLINK);
 }
 
 void ModeController::enterIdle() {
-    state_ = IDLE;
-    ctrl_->enable(false);      // motors off in idle
-    ctrl_->resetControllers();
-}
-
-void ModeController::startSearch() {
-    state_ = SEARCH_RUN;
-    nav_->startSearch();     // Navigator drives the maze
-}
-
-void ModeController::startSpeed() {
-    state_ = SPEED_RUN;
-    nav_->startSpeed();
-}
-
-void ModeController::doCalibrate() {
-    state_ = CALIBRATING;
     ctrl_->enable(false);
-    gyro_->calibrate();              // blocking ~1s; keep robot still
-    enterIdle();
+    state_ = IDLE;
+    led_->set(Indicator::OFF);
 }
 
-void ModeController::abortToIdle() {
-    nav_->abort();
-    enterIdle();
-}
-
-void ModeController::fullReset() {
-    // Phase 2: also clears the maze map here.
-    abortToIdle();
+void ModeController::startRun(State s) {
+    if (s == SPEED_RUN) {
+        if (!nav_->startSpeed()) return;   // no search map yet: stay idle
+    } else {
+        nav_->startSearch();
+    }
+    seenDecisions_ = nav_->decisions();
+    state_ = s;
+    led_->set(Indicator::OFF);
 }
 
 void ModeController::update() {
-    // Both-press = full reset, highest priority, any state.
-    if (btn_->takeBothPress()) { fullReset(); return; }
+    if (state_ == FAULT) { btn_->takeAny(); return; }
+
+    if (btn_->takeBothPress()) {
+        nav_->abort();
+        nav_->clearMap();
+        btn_->takeAny();
+        if (state_ != CALIBRATING) enterIdle();
+        return;
+    }
 
     switch (state_) {
+    case CALIBRATING:
+        btn_->takeAny();                    // ignore presses while calibrating
+        if (!gyro_->calibrating()) enterIdle();
+        break;
+
     case IDLE:
-        if (btn_->takeSearchLong())  { doCalibrate();  return; }
-        if (btn_->takeSearchShort()) { startSearch();  return; }
-        if (btn_->takeFastShort())   { startSpeed();   return; }
+        if (btn_->takeSearchLong())  { calibrate();          return; }
+        if (btn_->takeSearchShort()) { startRun(SEARCH_RUN); return; }
+        if (btn_->takeFastShort())   { startRun(SPEED_RUN);  return; }
         break;
 
     case SEARCH_RUN:
     case SPEED_RUN:
-    	nav_->update();
-        // Any button press during a run aborts it (rule 2.4.8 / 2.5.7).
-        if (btn_->takeSearchShort() || btn_->takeFastShort() ||
-            btn_->takeSearchLong()) {
-            abortToIdle();
-            return;
+        if (btn_->takeAny()) { nav_->abort(); enterIdle(); return; }   // rules 2.4.8 / 2.5.7
+
+        nav_->update();
+
+        if (nav_->decisions() != seenDecisions_) {   // one flash per decision
+            seenDecisions_ = nav_->decisions();
+            led_->pulse();
         }
+        if (nav_->ended()) enterIdle();
         break;
 
-    case CALIBRATING:
-        // Blocking calibrate returns to idle on its own; nothing to do.
+    case FAULT:
         break;
     }
 }

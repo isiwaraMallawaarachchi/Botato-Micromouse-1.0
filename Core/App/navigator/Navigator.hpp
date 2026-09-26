@@ -1,6 +1,7 @@
 #ifndef APP_NAVIGATOR_HPP
 #define APP_NAVIGATOR_HPP
 
+#include <cstdint>
 #include "MazeMap.hpp"
 #include "FloodFill.hpp"
 #include "Planner.hpp"
@@ -8,30 +9,59 @@
 #include "PIDController.hpp"
 #include "WallSensorArray.hpp"
 #include "Encoder.hpp"
+#include "NavConfig.h"
 
+/*
+ * Navigator — maze policy. Speaks only intentions to ControlLoop
+ * (setForwardSpeed, turnBy, setHeadingTrim); never touches hardware.
+ *
+ * Segment model. The robot drives toward the centre of a TARGET cell (pose_).
+ * segmentEndMm_ is the axle distance, since the run started, at which the axle
+ * is on that centre. When the axle is SENSE_LOOKAHEAD_MM short of it:
+ *
+ *   sense the target cell's walls and decide the next move, then
+ *     straight -> extend the segment by one cell and keep going, no stop
+ *     turn     -> brake to a stop on the centre, pivot, drive on
+ *     goal     -> brake, stop; search turns around for the return leg
+ *
+ * Position error cannot compound: segment ends advance by exactly one
+ * CELL_TRAVEL_MM, and every stop on a front wall re-anchors to the wall.
+ *
+ * Dead ends use a single 180-degree pivot, the same as any other turn.
+ * After the return leg the robot faces NORTH and backs into the start
+ * position, so every run begins from the same pose.
+ */
 class Navigator {
 public:
-    enum State { IDLE, SEARCH, RETURN, SPEED, DONE };
+    enum State  : uint8_t { IDLE, SEARCH, RETURN, SPEED, DONE, STUCK };
+    enum Phase  : uint8_t { DRIVE, SETTLE, TURN, PARK, FINISHED };
+    enum Action : uint8_t { ACT_STRAIGHT, ACT_LEFT, ACT_RIGHT, ACT_AROUND,
+                            ACT_GOAL, ACT_HOME, ACT_PARKED, ACT_STUCK };
 
-    void init(ControlLoop* ctrl, WallSensorArray* walls,
-              Encoder* encL, Encoder* encR);
+    void init(ControlLoop* ctrl, WallSensorArray* walls, Encoder* encL, Encoder* encR);
 
     void startSearch();
-    void startSpeed();
+    bool startSpeed();            // false if no completed search map exists
     void abort();
-    void update();
+    void clearMap();
+    void update();                // main loop
 
-    State state() const { return state_; }
-    int cellX() const { return pose_.x; }
-    int cellY() const { return pose_.y; }
+    State    state()     const { return state_; }
+    bool     running()   const { return phase_ != FINISHED; }
+    bool     ended()     const { return state_ == DONE || state_ == STUCK; }
+    bool     mapReady()  const { return mapReady_; }
+    uint32_t decisions() const { return decisions_; }
 
-    // exposed for debugging
-    GridPose pose_;
-    float headingRef_ = 0.0f;      // accumulated commanded heading
-    float turnTargetHeading_ = 0.0f;
-    float wallErrDbg_ = 0.0f;      // lateral error fed to the centring PID
-    float wallOffsetDbg_ = 0.0f;   // heading lean it produced (deg)
-    int   wallModeDbg_ = 0;        // 0 = off, 1 = both walls, 2 = left, 3 = right
+    // Live Expressions: robot.navigator_.tel
+    struct Telemetry {
+        uint8_t  state, phase, x, y, facing, lastAction;
+        uint8_t  wallL, wallF, wallR;       // last sensed at a decision point
+        uint8_t  frontRef;                  // 1 = stop point taken from front ToF
+        uint8_t  wallMode;                  // 0 off, 1 both, 2 left, 3 right
+        float    remainingMm, speedCmd, wallErrMm, wallTrimDeg;
+        uint32_t decisions;
+        int32_t  straightAhead;             // speed run: straight cells ahead
+    } tel = {};
 
 private:
     ControlLoop*     ctrl_  = nullptr;
@@ -41,65 +71,49 @@ private:
 
     MazeMap   map_;
     FloodFill flood_;
+    GridPose  pose_;
 
-    State state_ = IDLE;
-    enum Phase { SENSE, DECIDE, TURNING, DEAD_END, DRIVING, ARRIVE };
-    Phase phase_ = SENSE;
+    State  state_   = IDLE;
+    Phase  phase_   = FINISHED;
+    Action pending_ = ACT_STRAIGHT;
+    Turn   turn_    = TURN_NONE;
 
-    Turn  pendingTurn_ = TURN_NONE;
-    float cellStartDistance_ = 0.0f;
-    float searchSpeed_ = 0.0f;
-    uint32_t turnStartMs_ = 0;
-    bool  driveFollowsTurn_ = false;
+    float    cruise_        = 0.0f;
+    float    runStartMm_    = 0.0f;
+    float    segmentEndMm_  = 0.0f;
+    float    parkEndMm_     = 0.0f;
+    bool     decided_       = false;
+    bool     braking_       = false;
+    bool     homing_        = false;
+    bool     mapReady_      = false;
+    uint32_t decisions_     = 0;
+    uint32_t settleStartMs_ = 0;
 
-    // Overshoot carried into the next cell so distance error can't compound
-    // over a long straight run (guide 15).
-    float cellCarryMm_ = 0.0f;
+    int straightCache_ = 0;
+    int cacheKey_      = -1;
 
-    // ---- Dead-end multi-point (K) turn — always turns LEFT ----
-    // The reversal is two 90 steps, never one 180: a 180 command lands exactly
-    // on the +/-180 wrap boundary, where gyro noise decides the direction.
-    enum DeadEndStep {
-        DE_IDLE,
-        DE_SWING_OUT_A,
-        DE_REVERSE_A,
-        DE_STRAIGHTEN_A,
-        DE_ROTATE_90A,
-        DE_ROTATE_90B,
-        DE_SWING_OUT_B,
-        DE_REVERSE_B,
-        DE_STRAIGHTEN_B,
-        DE_SETTLE,
-        DE_FINISHED
-    };
+    PIDController pidWall_{navcfg::WALL_PID};
 
-    DeadEndStep deStep_     = DE_IDLE;
-    float deSwingTargetDeg_ = 0.0f;
-    float deRefDistance_    = 0.0f;
+    float axleMm() const;
+    float traveledMm() const { return axleMm() - runStartMm_; }
 
-    // Lateral centring: mm of offset -> deg of heading lean.
-    // Ki is small with a tight clamp (guide 14.2: integral must be clamped).
-    PIDController pidWall_{0.35f, 0.004f, 0.10f, 600.0f};
-
-    void beginCellSequence();
-    void senseWalls();
-    bool decideNextMove();
-    void beginTurn(Turn t);
-    bool turnComplete();
-    void beginDrive(bool afterTurn);
-    bool driveComplete();
-    void driveUpdate();
-    float wallCenterOffsetDeg();
-    float avgDistanceMm() const;
-    void goalOrReturnTransition();
-
-    void beginDeadEndTurn();
-    void updateDeadEndTurn();
-    void beginRelativeTurn(float deltaDeg);
-    void beginWheelSwing(bool pivotOnLeftWheel, float deltaDeg);
-    bool swingComplete() const;
-    void beginDeadEndReverse(float holdHeadingDeg);
-    bool deadEndReverseComplete(float distanceMm) const;
+    void   begin(State s, float cruise);
+    void   updateDrive();
+    void   updateSettle();
+    void   updateTurn();
+    void   updatePark();
+    void   senseWalls();
+    Action decide();
+    void   act(Action a);
+    void   startTurn(Turn t);
+    void   nextCell();
+    void   startHoming();
+    void   stopThen(Action a);
+    void   finish(State s);
+    float  frontReferenced(float traveled, float remaining);
+    float  straightAheadMm();
+    float  wallTrimDeg(float remaining);
+    void   publish(float remaining, float v);
 };
 
-#endif
+#endif // APP_NAVIGATOR_HPP

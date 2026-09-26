@@ -4,39 +4,34 @@
 #include <cstdint>
 
 /*
- * Indicator — status LED (and later buzzer) feedback.
- * Non-blocking: call update() every main loop pass. Patterns are set by
- * the caller and play out on their own.
+ * Indicator — status LED, non-blocking. update() every main-loop pass.
  *
- * Buzzer hooks are stubbed and marked TODO — wire a GPIO/PWM pin when the
- * buzzer is added, and fill in beep()/beepPattern().
+ * Competition behaviour:
+ *   BLINK   while the gyro calibrates (0.5s on / 0.5s off)
+ *   OFF     once calibrated, and whenever idle or running
+ *   pulse() one short flash per navigation decision, then back to OFF
+ *   FAIL    triple flash: gyro not found (the robot cannot run)
+ *
+ * PASS / FAIL are also the test-build verdicts.
  */
 class Indicator {
 public:
-    enum Pattern {
-        OFF,
-        SOLID,
-        SLOW_BLINK,     // idle / waiting
-        FAST_BLINK,     // busy (calibrating)
-        DOUBLE_BLINK,   // done / success
-        TRIPLE_BLINK    // error
-    };
+    enum Pattern { OFF, ON, BLINK, PASS, FAIL };
 
     void init();
     void set(Pattern p);
-    void update();                 // call every main loop pass
+    void pulse();                 // one flash over the current pattern
+    void update();
 
-    // Blocking convenience: N quick flashes (use only outside a run).
-    void flash(int times, uint32_t onMs = 100, uint32_t offMs = 100);
-
-    // --- Buzzer (TODO: wire when hardware is added) ---
-    void beep(uint32_t /*ms*/) { /* TODO: buzzer pin */ }
+    Pattern pattern() const { return pattern_; }
 
 private:
-    Pattern  pattern_ = OFF;
-    uint32_t lastMs_  = 0;
-    int      step_    = 0;
+    Pattern  pattern_    = OFF;
+    uint32_t lastMs_     = 0;
+    int      step_       = 0;
+    bool     pulsing_    = false;
+    uint32_t pulseStart_ = 0;
     void write(bool on);
 };
 
-#endif
+#endif // APP_INDICATOR_HPP

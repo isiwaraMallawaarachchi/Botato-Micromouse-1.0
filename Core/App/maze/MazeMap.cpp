@@ -1,11 +1,10 @@
 #include "MazeMap.hpp"
 
 void MazeMap::reset() {
-    for (int x = 0; x < maze::WIDTH; ++x)
-        for (int y = 0; y < maze::HEIGHT; ++y)
+    for (int x = 0; x < maze::MAX_DIM; ++x)
+        for (int y = 0; y < maze::MAX_DIM; ++y)
             cell_[x][y] = 0;
 
-    // Outer boundary walls are always present.
     for (int x = 0; x < maze::WIDTH; ++x) {
         setWall(x, 0, SOUTH);
         setWall(x, maze::HEIGHT - 1, NORTH);
@@ -16,14 +15,7 @@ void MazeMap::reset() {
     }
 }
 
-Dir MazeMap::opposite(Dir d) {
-    switch (d) {
-        case NORTH: return SOUTH;
-        case EAST:  return WEST;
-        case SOUTH: return NORTH;
-        default:    return EAST;
-    }
-}
+Dir MazeMap::opposite(Dir d) { return static_cast<Dir>((d + 2) % 4); }
 
 void MazeMap::neighbour(int x, int y, Dir d, int& nx, int& ny) {
     nx = x; ny = y;
@@ -41,24 +33,23 @@ bool MazeMap::inBounds(int x, int y) const {
 
 void MazeMap::setWall(int x, int y, Dir d) {
     if (!inBounds(x, y)) return;
-    cell_[x][y] |= (1 << d);
+    cell_[x][y] |= static_cast<uint8_t>(1u << d);
     int nx, ny;
     neighbour(x, y, d, nx, ny);
-    if (inBounds(nx, ny)) cell_[nx][ny] |= (1 << opposite(d));
+    if (inBounds(nx, ny)) cell_[nx][ny] |= static_cast<uint8_t>(1u << opposite(d));
 }
 
 bool MazeMap::hasWall(int x, int y, Dir d) const {
-    if (!inBounds(x, y)) return true;   // outside = wall
-    return (cell_[x][y] >> d) & 0x1;
+    if (!inBounds(x, y)) return true;
+    return (cell_[x][y] >> d) & 0x1u;
 }
 
 void MazeMap::markVisited(int x, int y) {
-    if (inBounds(x, y)) cell_[x][y] |= (1 << 4);
+    if (inBounds(x, y)) cell_[x][y] |= 0x10u;
 }
 
 bool MazeMap::isVisited(int x, int y) const {
-    if (!inBounds(x, y)) return false;
-    return (cell_[x][y] >> 4) & 0x1;
+    return inBounds(x, y) && ((cell_[x][y] >> 4) & 0x1u);
 }
 
 bool MazeMap::isGoal(int x, int y) const {

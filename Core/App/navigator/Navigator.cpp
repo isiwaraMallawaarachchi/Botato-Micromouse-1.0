@@ -1,433 +1,380 @@
 #include "Navigator.hpp"
 #include "Config.h"
 #include "MazeConfig.h"
+#include "NavConfig.h"
+#include "MotionProfile.hpp"
 #include <cmath>
 
-namespace {
-    constexpr float SEARCH_SPEED_MMPS  = 1200.0f;   // NOTE: >450 exceeds hardware
-    constexpr float SPEED_SPEED_MMPS   = 1200.0f;
-    constexpr float TURN_TOLERANCE_DEG = 5.0f;
-    constexpr float TURN_SETTLE_DPS    = 25.0f;
-    constexpr uint32_t TURN_TIMEOUT_MS = 3000;
-    constexpr float TURN_ADVANCE_MM    = 3.0f;      // rear-axle offset after a 90 turn
-
-    // ---- Dead-end K-turn tuning ----
-    constexpr float DE_SWING_ANGLE_DEG    = 20.0f;
-    constexpr float DE_REVERSE_MM         = 60.0f;  // main clearance knob
-    constexpr float DE_SETTLE_MM          = 30.0f;
-    constexpr float DE_SWING_SPEED_DPS    = 90.0f;
-    constexpr float DE_REVERSE_SPEED_MMPS = 500.0f;
-    constexpr float DE_SWING_TOL_DEG      = 3.0f;
-
-    // ---- Front-wall referencing ----
-    constexpr float FRONT_STOP_MM        = 30.0f;
-    constexpr float FRONT_REF_MAX_MM     = 120.0f;
-    constexpr float FRONT_ENTRY_GUARD_MM = 10.0f;
-    constexpr float FRONT_SLOW_MM        = 120.0f;
-    constexpr float FRONT_MIN_MMPS       = 90.0f;
-
-    // ---- Lateral centring ----
-    constexpr float WC_CORRIDOR_WIDTH_MM = 98.0f;   // LEFT+RIGHT sum when centred
-    constexpr float WC_HALF_WIDTH_MM     = WC_CORRIDOR_WIDTH_MM * 0.5f;
-    constexpr float WC_WIDTH_TOL_MM      = 15.0f;   // both-wall sanity check
-    constexpr float WC_VALID_MAX_MM      = 120.0f;  // above this isn't a near wall
-    constexpr float WC_CENTER_TRIM_MM    = 0.0f;    // MEASURE: (left-right) when centred
-    constexpr float WC_DEADBAND_MM       = 2.0f;
-    constexpr float WC_MAX_OFFSET_DEG    = 12.0f;   // cap the centring lean
-    constexpr float WC_ENTRY_MM          = 20.0f;   // post gate at cell entry
-    constexpr float WC_EXIT_MM           = 40.0f;   // post gate at cell exit
-
-    // Confidence weights (guide 5.3). One wall is a weaker reference than two.
-    constexpr float WC_GAIN_BOTH_WALLS   = 1.00f;
-    constexpr float WC_GAIN_ONE_WALL     = 0.75f;
-}
+/* ---- lifecycle ------------------------------------------------------------ */
 
 void Navigator::init(ControlLoop* ctrl, WallSensorArray* walls,
                      Encoder* encL, Encoder* encR) {
     ctrl_ = ctrl; walls_ = walls; encL_ = encL; encR_ = encR;
     map_.reset();
+    mapReady_ = false;
     state_ = IDLE;
+    phase_ = FINISHED;
 }
 
-float Navigator::avgDistanceMm() const {
+void Navigator::clearMap() {
+    map_.reset();
+    mapReady_ = false;
+}
+
+float Navigator::axleMm() const {
     return 0.5f * (encL_->distanceMm() + encR_->distanceMm());
+}
+
+void Navigator::begin(State s, float cruise) {
+    state_  = s;
+    cruise_ = cruise;
+    pose_   = GridPose{ maze::START_X, maze::START_Y, NORTH };
+
+    ctrl_->resetForRun();          // heading 0 == NORTH
+    ctrl_->enable(true);
+    runStartMm_ = axleMm();
+
+    // First target is the start cell's own centre: the robot is parked with
+    // its tail on the back wall, START_OFFSET_MM short of it. From here on
+    // the start cell is handled exactly like every other cell.
+    segmentEndMm_ = navcfg::START_OFFSET_MM;
+    decided_ = braking_ = homing_ = false;
+    cacheKey_ = -1;
+    pidWall_.reset();
+    phase_ = DRIVE;
 }
 
 void Navigator::startSearch() {
     map_.reset();
-    pose_ = { maze::START_X, maze::START_Y, NORTH };
-    searchSpeed_ = SEARCH_SPEED_MMPS;
-    ctrl_->resetControllers();
-    ctrl_->enable(true);
-    headingRef_ = 0.0f;          // gyro just zeroed; NORTH == 0
-    deStep_ = DE_IDLE;
-    cellCarryMm_ = 0.0f;
-    pidWall_.reset();
-    state_ = SEARCH;
-    beginCellSequence();
+    mapReady_ = false;
+    begin(SEARCH, cfg::SEARCH_SPEED_MMPS);
 }
 
-void Navigator::startSpeed() {
-    pose_ = { maze::START_X, maze::START_Y, NORTH };
-    searchSpeed_ = SPEED_SPEED_MMPS;
-    flood_.recompute(map_);
-    ctrl_->resetControllers();
-    ctrl_->enable(true);
-    headingRef_ = 0.0f;
-    deStep_ = DE_IDLE;
-    cellCarryMm_ = 0.0f;
-    pidWall_.reset();
-    state_ = SPEED;
-    beginCellSequence();
+bool Navigator::startSpeed() {
+    if (!mapReady_) return false;
+    flood_.toGoal(map_, true);     // straight-ahead lookahead needs it from tick one
+    begin(SPEED, cfg::SPEED_RUN_MMPS);
+    return true;
 }
 
 void Navigator::abort() {
     ctrl_->enable(false);
     state_ = IDLE;
+    phase_ = FINISHED;
+    homing_ = false;
 }
 
-void Navigator::beginCellSequence() { phase_ = SENSE; }
-
-void Navigator::senseWalls() {
-    bool wallLeft  = walls_->wallPresent(cfg::TOF_LEFT);
-    bool wallFront = walls_->wallPresent(cfg::TOF_FRONT);
-    bool wallRight = walls_->wallPresent(cfg::TOF_RIGHT);
-
-    Dir f = pose_.facing;
-    Dir left  = (Dir)(((int)f + 3) % 4);
-    Dir right = (Dir)(((int)f + 1) % 4);
-
-    if (wallFront) map_.setWall(pose_.x, pose_.y, f);
-    if (wallLeft)  map_.setWall(pose_.x, pose_.y, left);
-    if (wallRight) map_.setWall(pose_.x, pose_.y, right);
-
-    map_.markVisited(pose_.x, pose_.y);
+void Navigator::finish(State s) {
+    ctrl_->setForwardSpeed(0.0f);
+    ctrl_->setHeadingTrim(0.0f);
+    ctrl_->enable(false);
+    state_  = s;
+    phase_  = FINISHED;
+    homing_ = false;
 }
 
-bool Navigator::decideNextMove() {
-    if (state_ == SEARCH && map_.isGoal(pose_.x, pose_.y)) return false;
-    if (state_ == SPEED  && map_.isGoal(pose_.x, pose_.y)) return false;
-    if (state_ == RETURN && pose_.x == maze::START_X && pose_.y == maze::START_Y)
-        return false;
-
-    if (state_ == RETURN) flood_.recomputeTo(map_, maze::START_X, maze::START_Y);
-    else                  flood_.recompute(map_);
-
-    Dir target;
-    if (!flood_.nextDir(map_, pose_.x, pose_.y, target)) return false;
-
-    pendingTurn_ = Planner::turnFor(pose_.facing, target);
-    return true;
-}
-
-// Turn target is RELATIVE to the current heading reference, so the
-// continuous (unbounded) gyro angle never causes a mismatch.
-void Navigator::beginTurn(Turn t) {
-    float delta = 0.0f;
-    switch (t) {
-        case TURN_LEFT:  delta =  90.0f; break;   // anticlockwise-positive
-        case TURN_RIGHT: delta = -90.0f; break;
-        default:         delta =   0.0f; break;
+void Navigator::update() {
+    if (running()) {
+        switch (phase_) {
+            case DRIVE:  updateDrive();  break;
+            case SETTLE: updateSettle(); break;
+            case TURN:   updateTurn();   break;
+            case PARK:   updatePark();   break;
+            default: break;
+        }
     }
-    beginRelativeTurn(delta);
-    phase_ = TURNING;
+    tel.state     = state_;
+    tel.phase     = phase_;
+    tel.x         = static_cast<uint8_t>(pose_.x);
+    tel.y         = static_cast<uint8_t>(pose_.y);
+    tel.facing    = pose_.facing;
+    tel.decisions = decisions_;
 }
 
-// Command a relative turn and arm the timeout. Keep |deltaDeg| well under 180
-// so the heading-error wrap can't flip the direction.
-void Navigator::beginRelativeTurn(float deltaDeg) {
-    headingRef_ += deltaDeg;
-    turnTargetHeading_ = headingRef_;
-    ctrl_->holdHeading(turnTargetHeading_);
-    turnStartMs_ = HAL_GetTick();
-}
+/* ---- driving ------------------------------------------------------------- */
 
-bool Navigator::turnComplete() {
-    float err = turnTargetHeading_ - ctrl_->headingDeg();
-    while (err >  180.0f) err -= 360.0f;
-    while (err < -180.0f) err += 360.0f;
+void Navigator::updateDrive() {
+    const float traveled = traveledMm();
+    float remaining = segmentEndMm_ - traveled;
 
-    bool settled = (std::fabs(err) < TURN_TOLERANCE_DEG) &&
-                   (std::fabs(ctrl_->pvW()) < TURN_SETTLE_DPS);
-    bool timedOut = (HAL_GetTick() - turnStartMs_) > TURN_TIMEOUT_MS;
-    return settled || timedOut;
-}
+    // Stopping in this cell: take the stop point from the front wall if one
+    // is in range. Absolute beats relative (DECISIONS.md #25).
+    if (braking_) remaining = frontReferenced(traveled, remaining);
 
-void Navigator::beginDrive(bool afterTurn) {
-    driveFollowsTurn_ = afterTurn;
+    // Decision point: side sensors are now over the target cell's centre.
+    if (!decided_ && remaining <= navcfg::SENSE_LOOKAHEAD_MM) {
+        if (state_ != SPEED) senseWalls();     // speed run trusts the map
+        pending_ = decide();
+        ++decisions_;
+        tel.lastAction = pending_;
 
-    // Carry the previous cell's overshoot so distance error doesn't compound
-    // across a long straight run (guide 15). A turn or a front-wall stop
-    // re-references the position, so the carry is dropped there.
-    cellStartDistance_ = avgDistanceMm() - cellCarryMm_;
-    cellCarryMm_ = 0.0f;
-
-    pidWall_.reset();               // no stale integral from the previous cell
-    ctrl_->driveStraight(searchSpeed_, headingRef_);
-    phase_ = DRIVING;
-}
-
-bool Navigator::driveComplete() {
-    const float traveled = avgDistanceMm() - cellStartDistance_;
-
-    // Front wall in range => absolute reference, always wins over the encoder.
-    if (walls_->ok(cfg::TOF_FRONT)) {
-        const float fd = walls_->distanceMm(cfg::TOF_FRONT);
-        if (fd > 1.0f && fd < FRONT_REF_MAX_MM && traveled > FRONT_ENTRY_GUARD_MM) {
-            if (fd <= FRONT_STOP_MM) {
-                cellCarryMm_ = 0.0f;
-                return true;
-            }
-            return false;
+        if (pending_ == ACT_STRAIGHT) {
+            segmentEndMm_ += cfg::CELL_TRAVEL_MM;   // exact pitch: no drift
+            remaining     += cfg::CELL_TRAVEL_MM;
+            Planner::stepForward(pose_);
+        } else {
+            decided_ = braking_ = true;
         }
     }
 
-    float target = maze::CELL_MM;
-    if (driveFollowsTurn_) target += TURN_ADVANCE_MM;
-
-    if (traveled >= target) {
-        cellCarryMm_ = traveled - target;   // remainder into the next cell
-        if (cellCarryMm_ > 30.0f) cellCarryMm_ = 30.0f;   // sanity clamp
-        return true;
+    float v;
+    if (braking_) {
+        v = approachSpeed(remaining, cruise_, navcfg::BRAKE_DECEL_MMPS2,
+                          navcfg::CREEP_MMPS, navcfg::CREEP_ZONE_MM,
+                          navcfg::STOP_TOL_MM);
+        if (v == 0.0f) {
+            stopThen(pending_);
+            publish(remaining, 0.0f);
+            return;
+        }
+    } else {
+        v = cruise_;
+        // Speed run: the map says how far the straight goes, so accelerate
+        // along it and start braking early enough for the turn at its end.
+        if (state_ == SPEED) {
+            const float stopDist = remaining + straightAheadMm() - navcfg::CREEP_ZONE_MM;
+            const float vBrake = std::sqrt(2.0f * navcfg::BRAKE_DECEL_MMPS2 *
+                                           (stopDist > 0.0f ? stopDist : 0.0f));
+            if (vBrake < v) v = vBrake;
+        }
     }
-    return false;
+
+    ctrl_->setForwardSpeed(v);
+    ctrl_->setHeadingTrim(wallTrimDeg(remaining));
+    publish(remaining, v);
 }
 
-// Lateral centring. A differential drive can only move sideways by leaning,
-// so this returns a small heading offset; the heading loop does the rest.
-// Both walls -> difference. One wall -> hold half the corridor width from it.
-float Navigator::wallCenterOffsetDeg() {
-    const float posInCell = avgDistanceMm() - cellStartDistance_;
+// Stop on the centre, wait for the robot to actually be still, then act.
+void Navigator::stopThen(Action a) {
+    ctrl_->setForwardSpeed(0.0f);
+    ctrl_->setHeadingTrim(0.0f);
+    pending_       = a;
+    settleStartMs_ = HAL_GetTick();
+    phase_         = SETTLE;
+}
 
-    // Post gate: corner pillars corrupt side readings at cell boundaries.
-    const bool inWindow = (posInCell > WC_ENTRY_MM) &&
-                          (posInCell < maze::CELL_MM - WC_EXIT_MM);
-    if (!inWindow) {
+void Navigator::updateSettle() {
+    const bool still   = std::fabs(ctrl_->pvX()) < navcfg::SETTLE_MMPS &&
+                         ctrl_->speedRef() == 0.0f;
+    const bool expired = (HAL_GetTick() - settleStartMs_) > navcfg::SETTLE_TIMEOUT_MS;
+    if (still || expired) act(pending_);
+}
+
+float Navigator::frontReferenced(float traveled, float remaining) {
+    tel.frontRef = 0;
+    if (!walls_->ok(cfg::TOF_FRONT)) return remaining;
+
+    const float fd = walls_->distanceMm(cfg::TOF_FRONT);
+    if (fd > navcfg::FRONT_REF_MAX_MM) return remaining;
+
+    // Compensate for sensor + filter lag at the current speed.
+    const float r = fd - ctrl_->speedRef() * navcfg::FRONT_LATENCY_S - navcfg::FRONT_STOP_MM;
+    segmentEndMm_ = traveled + r;           // re-anchor: erases encoder drift
+    tel.frontRef  = 1;
+    return r;
+}
+
+/* ---- sensing and deciding -------------------------------------------------- */
+
+void Navigator::senseWalls() {
+    const Dir f     = pose_.facing;
+    const Dir left  = static_cast<Dir>((f + 3) % 4);
+    const Dir right = static_cast<Dir>((f + 1) % 4);
+
+    const bool wl = walls_->seen(cfg::TOF_LEFT,  navcfg::SIDE_WALL_PRESENT_MM);
+    const bool wf = walls_->seen(cfg::TOF_FRONT, navcfg::FRONT_WALL_PRESENT_MM);
+    const bool wr = walls_->seen(cfg::TOF_RIGHT, navcfg::SIDE_WALL_PRESENT_MM);
+
+    if (wf) map_.setWall(pose_.x, pose_.y, f);
+    if (wl) map_.setWall(pose_.x, pose_.y, left);
+    if (wr) map_.setWall(pose_.x, pose_.y, right);
+    map_.markVisited(pose_.x, pose_.y);
+
+    tel.wallL = wl; tel.wallF = wf; tel.wallR = wr;
+}
+
+Navigator::Action Navigator::decide() {
+    if ((state_ == SEARCH || state_ == SPEED) && map_.isGoal(pose_.x, pose_.y))
+        return ACT_GOAL;
+    if (state_ == RETURN && pose_.x == maze::START_X && pose_.y == maze::START_Y)
+        return ACT_HOME;
+
+    if (state_ == RETURN) flood_.toCell(map_, maze::START_X, maze::START_Y, false);
+    else                  flood_.toGoal(map_, state_ == SPEED);
+
+    Dir target;
+    if (!flood_.nextDir(map_, pose_.x, pose_.y, pose_.facing, target)) return ACT_STUCK;
+
+    switch (Planner::turnFor(pose_.facing, target)) {
+        case TURN_LEFT:   return ACT_LEFT;
+        case TURN_RIGHT:  return ACT_RIGHT;
+        case TURN_AROUND: return ACT_AROUND;
+        default:          return ACT_STRAIGHT;
+    }
+}
+
+void Navigator::act(Action a) {
+    switch (a) {
+    case ACT_LEFT:     startTurn(TURN_LEFT);   break;
+    case ACT_RIGHT:    startTurn(TURN_RIGHT);  break;
+    case ACT_AROUND:   startTurn(TURN_AROUND); break;   // single 180 pivot
+    case ACT_STRAIGHT: nextCell();             break;
+
+    case ACT_GOAL:
+        if (state_ == SEARCH) {
+            // Stopped in the goal: plan the way home from right here.
+            state_   = RETURN;
+            cruise_  = cfg::SEARCH_SPEED_MMPS;
+            pending_ = decide();
+            ++decisions_;
+            tel.lastAction = pending_;
+            act(pending_);
+        } else {
+            finish(DONE);                               // speed run complete
+        }
+        break;
+
+    case ACT_HOME:   startHoming();                      break;
+    case ACT_PARKED: mapReady_ = true; finish(DONE);     break;
+    case ACT_STUCK:  finish(STUCK);                      break;
+    }
+}
+
+/* ---- turning --------------------------------------------------------------- */
+
+void Navigator::startTurn(Turn t) {
+    turn_ = t;
+    ctrl_->setForwardSpeed(0.0f);
+    ctrl_->setHeadingTrim(0.0f);
+    ctrl_->turnBy(Planner::turnDegrees(t));
+    phase_ = TURN;
+}
+
+void Navigator::updateTurn() {
+    if (!ctrl_->turnDone()) return;
+    Planner::applyTurn(pose_, turn_);
+    if (homing_) {
+        parkEndMm_ = traveledMm() - (navcfg::START_OFFSET_MM - navcfg::PARK_GAP_MM);
+        phase_ = PARK;
+    } else {
+        nextCell();
+    }
+}
+
+// Axle is on the current cell's centre: target the next one.
+void Navigator::nextCell() {
+    segmentEndMm_ = traveledMm() + cfg::CELL_TRAVEL_MM;
+    Planner::stepForward(pose_);
+    decided_ = braking_ = false;
+    pidWall_.reset();
+    phase_ = DRIVE;
+}
+
+/* ---- return home and park -------------------------------------------------- */
+
+// On the start cell's centre: face NORTH, then back into the start position.
+void Navigator::startHoming() {
+    homing_ = true;
+    const Turn t = Planner::turnFor(pose_.facing, NORTH);
+    if (t == TURN_NONE) {
+        parkEndMm_ = traveledMm() - (navcfg::START_OFFSET_MM - navcfg::PARK_GAP_MM);
+        phase_ = PARK;
+    } else {
+        startTurn(t);
+    }
+}
+
+void Navigator::updatePark() {
+    const float remaining = traveledMm() - parkEndMm_;   // still to reverse
+    const float v = approachSpeed(remaining, navcfg::PARK_SPEED_MMPS,
+                                  navcfg::BRAKE_DECEL_MMPS2,
+                                  navcfg::CREEP_MMPS, navcfg::CREEP_ZONE_MM,
+                          navcfg::STOP_TOL_MM);
+    if (v == 0.0f) { stopThen(ACT_PARKED); return; }
+    ctrl_->setForwardSpeed(-v);
+    ctrl_->setHeadingTrim(0.0f);
+    publish(remaining, -v);
+}
+
+/* ---- speed-run lookahead --------------------------------------------------- */
+
+// How far the known path runs straight beyond the target cell. The flood
+// is fixed during a speed run, so the walk is cached per target cell.
+float Navigator::straightAheadMm() {
+    const int key = (pose_.x << 8) | (pose_.y << 2) | pose_.facing;
+    if (key != cacheKey_) {
+        cacheKey_ = key;
+        straightCache_ = 0;
+        int x = pose_.x, y = pose_.y;
+        for (int i = 0; i < maze::MAX_DIM; ++i) {
+            if (map_.isGoal(x, y)) break;
+            Dir d;
+            if (!flood_.nextDir(map_, x, y, pose_.facing, d) || d != pose_.facing) break;
+            MazeMap::neighbour(x, y, d, x, y);
+            ++straightCache_;
+        }
+        tel.straightAhead = straightCache_;
+    }
+    return straightCache_ * cfg::CELL_TRAVEL_MM;
+}
+
+/* ---- lateral centring ------------------------------------------------------ */
+
+// Returns a small heading lean; the heading loop does the rest (#28).
+float Navigator::wallTrimDeg(float remaining) {
+    tel.wallMode = 0;
+    tel.wallErrMm = tel.wallTrimDeg = 0.0f;
+
+    // Side-sensor position along the track relative to the target centre.
+    // Corner posts sit on cell boundaries; keep clear of them.
+    const float pitch = cfg::CELL_PITCH_MM;
+    const float p = cfg::TOF_SIDE_AHEAD_MM - remaining;
+    float q = std::fmod(p + 0.5f * pitch, pitch);
+    if (q < 0.0f) q += pitch;
+    const float fromPost = (q < pitch - q) ? q : pitch - q;
+
+    if (fromPost < navcfg::WC_POST_GATE_MM || ctrl_->speedRef() < 1.0f) {
         pidWall_.reset();
-        wallErrDbg_ = 0.0f; wallOffsetDbg_ = 0.0f; wallModeDbg_ = 0;
         return 0.0f;
     }
 
     const float ld = walls_->distanceMm(cfg::TOF_LEFT);
     const float rd = walls_->distanceMm(cfg::TOF_RIGHT);
-    const bool leftSeen  = walls_->ok(cfg::TOF_LEFT)  && ld < WC_VALID_MAX_MM;
-    const bool rightSeen = walls_->ok(cfg::TOF_RIGHT) && rd < WC_VALID_MAX_MM;
+    const bool  lSeen = walls_->seen(cfg::TOF_LEFT,  navcfg::SIDE_WALL_PRESENT_MM);
+    const bool  rSeen = walls_->seen(cfg::TOF_RIGHT, navcfg::SIDE_WALL_PRESENT_MM);
+    const float half  = navcfg::WC_SUM_CENTERED_MM * 0.5f;
 
-    float err  = 0.0f;
-    float gain = 0.0f;
-
-    if (leftSeen && rightSeen) {
-        // Width invariant: two real parallel walls sum to a constant however
-        // far off-centre we are. A stub or an opening breaks it.
-        if (std::fabs((ld + rd) - WC_CORRIDOR_WIDTH_MM) < WC_WIDTH_TOL_MM) {
-            err  = (ld - rd) - WC_CENTER_TRIM_MM;   // +ve = too close to the right
-            gain = WC_GAIN_BOTH_WALLS;
-            wallModeDbg_ = 1;
+    float err = 0.0f, gain = 0.0f;
+    if (lSeen && rSeen) {
+        // Two real parallel walls always sum to the same width, however far
+        // off-centre we are; a stub or an opening breaks that.
+        if (std::fabs((ld + rd) - navcfg::WC_SUM_CENTERED_MM) < navcfg::WC_WIDTH_TOL_MM) {
+            err = (ld - rd) - navcfg::WC_CENTER_TRIM_MM;   // + = drifted right
+            gain = navcfg::WC_GAIN_BOTH_WALLS;
+            tel.wallMode = 1;
         }
-    } else if (leftSeen) {
-        // Hold half-width from the left wall. x2 keeps the scale identical to
-        // the both-wall error, so one PID tuning covers both cases.
-        err  = 2.0f * (ld - WC_HALF_WIDTH_MM);
-        gain = WC_GAIN_ONE_WALL;
-        wallModeDbg_ = 2;
-    } else if (rightSeen) {
-        err  = 2.0f * (WC_HALF_WIDTH_MM - rd);
-        gain = WC_GAIN_ONE_WALL;
-        wallModeDbg_ = 3;
+    } else if (lSeen) {
+        err = 2.0f * (ld - half);          // x2 keeps one PID tuning valid
+        gain = navcfg::WC_GAIN_ONE_WALL;
+        tel.wallMode = 2;
+    } else if (rSeen) {
+        err = 2.0f * (half - rd);
+        gain = navcfg::WC_GAIN_ONE_WALL;
+        tel.wallMode = 3;
     }
 
-    if (gain == 0.0f) {
-        pidWall_.reset();
-        wallErrDbg_ = 0.0f; wallOffsetDbg_ = 0.0f; wallModeDbg_ = 0;
-        return 0.0f;
-    }
+    if (gain == 0.0f) { pidWall_.reset(); tel.wallMode = 0; return 0.0f; }
+    if (std::fabs(err) < navcfg::WC_DEADBAND_MM) err = 0.0f;
 
-    if (std::fabs(err) < WC_DEADBAND_MM) err = 0.0f;
-
-    float off = gain * pidWall_.compute(err);   // +ve error -> lean left (CCW +)
-    if (off >  WC_MAX_OFFSET_DEG) off =  WC_MAX_OFFSET_DEG;
-    if (off < -WC_MAX_OFFSET_DEG) off = -WC_MAX_OFFSET_DEG;
-
-    wallErrDbg_ = err; wallOffsetDbg_ = off;
-    return off;
+    const float trim = gain * pidWall_.compute(err);   // + = lean left (CCW)
+    tel.wallErrMm = err;
+    tel.wallTrimDeg = trim;
+    return trim;                                       // clamped in ControlLoop
 }
 
-// One command per pass: tapered speed near a front wall + centring lean.
-void Navigator::driveUpdate() {
-    float v = searchSpeed_;
+/* ---- telemetry ----------------------------------------------------------- */
 
-    if (walls_->ok(cfg::TOF_FRONT)) {
-        const float fd = walls_->distanceMm(cfg::TOF_FRONT);
-        if (fd < FRONT_SLOW_MM) {
-            float k = (fd - FRONT_STOP_MM) / (FRONT_SLOW_MM - FRONT_STOP_MM);
-            if (k < 0.0f) k = 0.0f;
-            if (k > 1.0f) k = 1.0f;
-            v = FRONT_MIN_MMPS + k * (searchSpeed_ - FRONT_MIN_MMPS);
-        }
-    }
-
-    ctrl_->driveStraight(v, headingRef_ + wallCenterOffsetDeg());
-}
-
-// ---- Dead-end K-turn (always LEFT) -----------------------------------------
-
-// Pivot about ONE wheel. The mixer gives v_left = v - w*W/2, v_right = v + w*W/2,
-// so v = ±w*W/2 parks one wheel and swings the body about it, producing the
-// lateral offset a centred pivot cannot.
-void Navigator::beginWheelSwing(bool pivotOnLeftWheel, float deltaDeg) {
-    deSwingTargetDeg_ = ctrl_->headingDeg() + deltaDeg;
-
-    const float wDps = (deltaDeg >= 0.0f) ? DE_SWING_SPEED_DPS : -DE_SWING_SPEED_DPS;
-    const float wRad = wDps * 3.14159265f / 180.0f;
-    const float half = cfg::WHEELBASE_MM * 0.5f;
-    const float vMmPerS = pivotOnLeftWheel ? (wRad * half) : (-wRad * half);
-
-    ctrl_->setTargets(vMmPerS, wDps);
-}
-
-bool Navigator::swingComplete() const {
-    return std::fabs(deSwingTargetDeg_ - ctrl_->headingDeg()) < DE_SWING_TOL_DEG;
-}
-
-void Navigator::beginDeadEndReverse(float holdHeadingDeg) {
-    deRefDistance_ = avgDistanceMm();
-    ctrl_->driveStraight(-DE_REVERSE_SPEED_MMPS, holdHeadingDeg);
-}
-
-bool Navigator::deadEndReverseComplete(float distanceMm) const {
-    return (avgDistanceMm() - deRefDistance_) <= -distanceMm;
-}
-
-void Navigator::beginDeadEndTurn() {
-    phase_  = DEAD_END;
-    deStep_ = DE_SWING_OUT_A;
-    beginWheelSwing(false, DE_SWING_ANGLE_DEG);   // pivot on right wheel
-}
-
-void Navigator::updateDeadEndTurn() {
-    switch (deStep_) {
-    case DE_SWING_OUT_A:
-        if (swingComplete()) {
-            beginDeadEndReverse(headingRef_ + DE_SWING_ANGLE_DEG);
-            deStep_ = DE_REVERSE_A;
-        }
-        break;
-
-    case DE_REVERSE_A:
-        if (deadEndReverseComplete(DE_REVERSE_MM)) {
-            beginWheelSwing(true, -DE_SWING_ANGLE_DEG);
-            deStep_ = DE_STRAIGHTEN_A;
-        }
-        break;
-
-    case DE_STRAIGHTEN_A:
-        if (swingComplete()) {
-            beginRelativeTurn(90.0f);          // first half — unambiguous CCW
-            deStep_ = DE_ROTATE_90A;
-        }
-        break;
-
-    case DE_ROTATE_90A:
-        if (turnComplete()) {
-            beginRelativeTurn(90.0f);          // second half
-            deStep_ = DE_ROTATE_90B;
-        }
-        break;
-
-    case DE_ROTATE_90B:
-        if (turnComplete()) {
-            beginWheelSwing(false, DE_SWING_ANGLE_DEG);
-            deStep_ = DE_SWING_OUT_B;
-        }
-        break;
-
-    case DE_SWING_OUT_B:
-        if (swingComplete()) {
-            beginDeadEndReverse(headingRef_ + DE_SWING_ANGLE_DEG);
-            deStep_ = DE_REVERSE_B;
-        }
-        break;
-
-    case DE_REVERSE_B:
-        if (deadEndReverseComplete(DE_REVERSE_MM)) {
-            beginWheelSwing(true, -DE_SWING_ANGLE_DEG);
-            deStep_ = DE_STRAIGHTEN_B;
-        }
-        break;
-
-    case DE_STRAIGHTEN_B:
-        if (swingComplete()) {
-            beginDeadEndReverse(headingRef_);
-            deStep_ = DE_SETTLE;
-        }
-        break;
-
-    case DE_SETTLE:
-        if (deadEndReverseComplete(DE_SETTLE_MM)) deStep_ = DE_FINISHED;
-        break;
-
-    default:
-        break;
-    }
-}
-
-// ---- Main state machine ----------------------------------------------------
-
-void Navigator::update() {
-    if (state_ == IDLE || state_ == DONE) return;
-
-    switch (phase_) {
-    case SENSE:
-        senseWalls();
-        phase_ = DECIDE;
-        break;
-
-    case DECIDE:
-        if (!decideNextMove()) { goalOrReturnTransition(); break; }
-        if      (pendingTurn_ == TURN_NONE)   beginDrive(false);
-        else if (pendingTurn_ == TURN_AROUND) beginDeadEndTurn();
-        else                                  beginTurn(pendingTurn_);
-        break;
-
-    case TURNING:
-        if (turnComplete()) {
-            Planner::applyTurn(pose_, pendingTurn_);
-            cellCarryMm_ = 0.0f;        // turn re-references position
-            beginDrive(true);
-        }
-        break;
-
-    case DEAD_END:
-        updateDeadEndTurn();
-        if (deStep_ == DE_FINISHED) {
-            Planner::applyTurn(pose_, TURN_AROUND);
-            deStep_ = DE_IDLE;
-            cellCarryMm_ = 0.0f;
-            beginDrive(false);
-        }
-        break;
-
-    case DRIVING:
-        driveUpdate();
-        if (driveComplete()) {
-            Planner::stepForward(pose_);
-            phase_ = ARRIVE;
-        }
-        break;
-
-    case ARRIVE:
-        beginCellSequence();
-        break;
-    }
-}
-
-void Navigator::goalOrReturnTransition() {
-    if (state_ == SEARCH) {
-        state_ = RETURN;
-        beginCellSequence();
-    } else {
-        ctrl_->setTargets(0.0f, 0.0f);
-        ctrl_->enable(false);
-        state_ = DONE;
-    }
+void Navigator::publish(float remaining, float v) {
+    tel.remainingMm = remaining;
+    tel.speedCmd    = v;
 }

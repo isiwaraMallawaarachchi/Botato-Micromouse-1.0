@@ -1,57 +1,53 @@
 #include "Robot.hpp"
-#include "Config.h"
-
 extern "C" {
-    #include "tim.h"
-    #include "i2c.h"
+#include "tim.h"
+#include "i2c.h"
 }
 
-Robot robot;   // the one global instance
+Robot robot;
 
-void Robot::init() {
+void Robot::initCore() {
     led_.init();
-    led_.set(Indicator::FAST_BLINK);   // busy: calibrating
+    led_.set(Indicator::BLINK);          // visible during the blocking ToF boot
+    btn_.init();
 
-    // Encoders: left = TIM5 (not inverted), right = TIM2 (inverted).
-    encL_.init(&htim5, false);
-    encR_.init(&htim2, true);
-
-    // Motors + drive.
+    encL_.init(&htim5, false);           // left  = TIM5
+    encR_.init(&htim2, true);            // right = TIM2, negated (#18)
     drive_.init();
 
-    // Gyro on the dedicated I2C2 bus; calibrate once at boot (keep still).
-    gyro_.init(&hi2c2);
-    gyro_.calibrate();
+    gyro_.init(&hi2c2);                  // I2C2, dedicated (#16)
+    walls_.init(&hi2c1);                 // I2C1, XSHUT sequence (~1s)
 
-    led_.flash(3);                     // 3 flashes = calibration done
-    led_.set(Indicator::SLOW_BLINK);   // idle, waiting for button
-
-    // ToF array on I2C1.
-    walls_.init(&hi2c1);
-
-    // Control loop wiring.
     ctrl_.init(&gyro_, &encL_, &encR_, &drive_);
+    ctrl_.enable(false);
 
+    coreReady_ = true;
+    HAL_TIM_Base_Start_IT(&htim3);       // 1kHz tick starts last
+    gyro_.beginCalibration();            // ISR takes it from here
+}
+
+void Robot::init() {
+    initCore();
     navigator_.init(&ctrl_, &walls_, &encL_, &encR_);
-
-    // Buttons + mode state machine.
-    btn_.init();
-    modes_.init(&btn_, &ctrl_, &gyro_, &navigator_);
-
-    // Start the 1kHz control tick last, once everything is ready.
-    HAL_TIM_Base_Start_IT(&htim3);
+    modes_.init(&btn_, &ctrl_, &gyro_, &navigator_, &led_);
 }
 
 void Robot::onControlTick() {
-    // Order matters: fresh sensor data BEFORE the control loop consumes it.
-    gyro_.update();     // oversampled read + yaw integrate
+    if (!coreReady_) return;
+    gyro_.update();                      // fresh sensors BEFORE the controller
     encL_.update();
     encR_.update();
-    ctrl_.tick();       // fuse -> PID -> motors
+    ctrl_.tick();
+}
+
+void Robot::serviceCore() {
+    walls_.poll();
+    btn_.update();
+    led_.update();
 }
 
 void Robot::onMainLoop() {
-    walls_.poll();      // non-blocking ToF (I2C in main loop, not ISR)
+    walls_.poll();
     btn_.update();
     modes_.update();
     led_.update();
