@@ -5,9 +5,11 @@
 extern "C" {
 #include "i2c.h"
 #include "gpio.h"
+#include "tof.h"
 }
 
 I2CGyroReport i2cGyro;
+I2CToFReport  i2cToF;
 
 namespace {
 
@@ -317,4 +319,242 @@ void Test_I2C_Gyro_Update() {
             captureLiveState();
         }
     }
+}
+
+
+/* ==========================================================================
+ * PART 2 — I2C1 + five VL53L0X + XSHUT address assignment
+ * ========================================================================== */
+
+namespace {
+
+// ---- I2C1 pins (PINOUT.md): PB6 SCL AF4, PB7 SDA AF4 -----------------------
+constexpr uint8_t I2C1_SCL_BIT = 6;
+constexpr uint8_t I2C1_SDA_BIT = 7;
+
+// ---- VL53L0X ---------------------------------------------------------------
+constexpr uint8_t  VL53_DEFAULT_7BIT = 0x29;
+constexpr uint16_t VL53_DEFAULT_ADDR = (VL53_DEFAULT_7BIT << 1);
+constexpr uint8_t  VL53_ADDR_REG     = 0x8A;   // I2C_SLAVE_DEVICE_ADDRESS
+constexpr uint8_t  VL53_MODEL_ID_REG = 0xC0;   // reads 0xEE on a real VL53L0X
+constexpr uint8_t  VL53_MODEL_ID     = 0xEE;   // 238 decimal
+
+// Same targets and boot delay as WallSensorArray::init() — the point of this
+// test is to prove the production sequence, so it must not diverge from it.
+constexpr uint8_t  TOF_TARGET_ADDR[5] = { 0x30, 0x31, 0x32, 0x33, 0x34 };
+constexpr uint32_t XSHUT_BOOT_DELAY_MS = 10;
+
+constexpr uint32_t TOF_SCAN_TIMEOUT_MS = 2;
+constexpr uint32_t TOF_IO_TIMEOUT_MS   = 100;
+constexpr uint32_t TOF_POLL_PERIOD_MS  = 50;   // sensors free-run at ~30Hz
+
+struct XPin { GPIO_TypeDef* port; uint16_t pin; };
+XPin tofXshut[5];
+
+VL53L0X_Dev_t tofDev[5];
+uint32_t lastToFPollMs = 0;
+
+// XSHUT is open-drain (PINOUT.md): writing LOW pulls the sensor into standby,
+// writing HIGH releases the pin and the breakout's own pull-up takes it to
+// 2.8V. Never drive 3.3V push-pull onto it — the sensor's logic is 2.8V.
+void xshutDown(int i) { HAL_GPIO_WritePin(tofXshut[i].port, tofXshut[i].pin, GPIO_PIN_RESET); }
+void xshutUp  (int i) { HAL_GPIO_WritePin(tofXshut[i].port, tofXshut[i].pin, GPIO_PIN_SET);   }
+
+void captureToFPinState() {
+    // PB6/PB7 are in AFR[0] (pins 0..7), 4 bits per pin.
+    i2cToF.afScl = static_cast<uint8_t>((GPIOB->AFR[0] >> (I2C1_SCL_BIT * 4)) & 0xF);
+    i2cToF.afSda = static_cast<uint8_t>((GPIOB->AFR[0] >> (I2C1_SDA_BIT * 4)) & 0xF);
+    i2cToF.moderScl = static_cast<uint8_t>((GPIOB->MODER >> (I2C1_SCL_BIT * 2)) & 0x3);
+    i2cToF.moderSda = static_cast<uint8_t>((GPIOB->MODER >> (I2C1_SDA_BIT * 2)) & 0x3);
+    i2cToF.idleScl  = static_cast<uint8_t>((GPIOB->IDR >> I2C1_SCL_BIT) & 0x1);
+    i2cToF.idleSda  = static_cast<uint8_t>((GPIOB->IDR >> I2C1_SDA_BIT) & 0x1);
+}
+
+// Scans I2C1 and returns how many devices answered. Up to `maxOut` of the
+// 7-bit addresses are written into out[].
+uint8_t scanToFBus(uint8_t* out, uint8_t maxOut) {
+    uint8_t n = 0;
+    for (uint8_t a = 0x08; a <= 0x77; ++a) {
+        if (HAL_I2C_IsDeviceReady(&hi2c1, static_cast<uint16_t>(a << 1), 1,
+                                  TOF_SCAN_TIMEOUT_MS) == HAL_OK) {
+            if (out && n < maxOut) out[n] = a;
+            ++n;
+        }
+    }
+    hi2c1.ErrorCode = HAL_I2C_ERROR_NONE;   // clear the AF flood from no-shows
+    return n;
+}
+
+bool tofReadReg8(uint16_t addr8bit, uint8_t reg, uint8_t& out) {
+    return HAL_I2C_Mem_Read(&hi2c1, addr8bit, reg, 1, &out, 1,
+                            TOF_IO_TIMEOUT_MS) == HAL_OK;
+}
+
+void noteToFSample(int i, uint16_t raw, uint16_t filt) {
+    i2cToF.rawMm[i]  = raw;
+    i2cToF.filtMm[i] = filt;
+    if (filt < i2cToF.minMm[i]) i2cToF.minMm[i] = filt;
+    if (filt > i2cToF.maxMm[i]) i2cToF.maxMm[i] = filt;
+}
+
+} // namespace
+
+
+void Test_I2C_ToF_Init() {
+    i2cToF = I2CToFReport{};
+    for (int i = 0; i < 5; ++i) {
+        i2cToF.minMm[i] = 0xFFFF;
+        i2cToF.maxMm[i] = 0;
+    }
+
+    robot.led().init();
+    robot.led().set(Indicator::FAST_BLINK);
+
+    // Pin macros, in the index order cfg::ToFIndex defines. Same mapping as
+    // WallSensorArray::init(); XSHUT_RIGHT is PB8, NOT PB10 (PB10 is I2C2_SCL).
+    tofXshut[cfg::TOF_LEFT]       = { XSHUT_LEFT_GPIO_Port,  XSHUT_LEFT_Pin  };
+    tofXshut[cfg::TOF_LEFTFRONT]  = { XSHUT_LF_GPIO_Port,    XSHUT_LF_Pin    };
+    tofXshut[cfg::TOF_FRONT]      = { XSHUT_FRONT_GPIO_Port, XSHUT_FRONT_Pin };
+    tofXshut[cfg::TOF_RIGHTFRONT] = { XSHUT_RF_GPIO_Port,    XSHUT_RF_Pin    };
+    tofXshut[cfg::TOF_RIGHT]      = { XSHUT_RIGHT_GPIO_Port, XSHUT_RIGHT_Pin };
+
+    // ---- Stage 0: pin level, before any transaction ------------------------
+    captureToFPinState();
+
+    // ---- Stage 1: everything down. THE "BEFORE" CHECK ----------------------
+    // With all five in standby the bus must be empty. A device answering here
+    // is a sensor whose XSHUT does not actually hold it down — it will still
+    // be sitting at 0x29 when the next sensor boots, and the address write
+    // will hit both of them at once.
+    for (int i = 0; i < 5; ++i) xshutDown(i);
+    HAL_Delay(XSHUT_BOOT_DELAY_MS * 3);
+    i2cToF.countAllDown = scanToFBus(i2cToF.addrAllDown, 4);
+
+    // ---- Stage 2: bring them up one at a time ------------------------------
+    for (int i = 0; i < 5; ++i) {
+        xshutUp(i);
+        HAL_Delay(XSHUT_BOOT_DELAY_MS);
+
+        // Did the line physically rise? Open-drain only pulls low; the rise
+        // depends on the breakout's pull-up. A 0 here means XSHUT is floating
+        // and the sensor may be in an undefined state rather than running.
+        i2cToF.xshutHigh[i] =
+            (HAL_GPIO_ReadPin(tofXshut[i].port, tofXshut[i].pin) == GPIO_PIN_SET) ? 1 : 0;
+
+        // Scan now: expect the i already-moved sensors plus this one at 0x29.
+        i2cToF.scanCountAtStage[i] = scanToFBus(nullptr, 0);
+
+        i2cToF.bootedAt29[i] =
+            (HAL_I2C_IsDeviceReady(&hi2c1, VL53_DEFAULT_ADDR, 2,
+                                   TOF_IO_TIMEOUT_MS) == HAL_OK) ? 1 : 0;
+
+        if (!i2cToF.bootedAt29[i]) { xshutDown(i); continue; }
+
+        // Identity before the move. An ACK alone can come from a bus glitch;
+        // 0xEE out of the model-ID register cannot.
+        tofReadReg8(VL53_DEFAULT_ADDR, VL53_MODEL_ID_REG, i2cToF.modelId[i]);
+
+        // The move itself.
+        uint8_t target = TOF_TARGET_ADDR[i];
+        const bool wrote = (HAL_I2C_Mem_Write(&hi2c1, VL53_DEFAULT_ADDR, VL53_ADDR_REG,
+                                              1, &target, 1, TOF_IO_TIMEOUT_MS) == HAL_OK);
+        HAL_Delay(2);
+
+        if (wrote) {
+            const uint16_t newAddr = static_cast<uint16_t>(target << 1);
+
+            i2cToF.movedOk[i] =
+                (HAL_I2C_IsDeviceReady(&hi2c1, newAddr, 2, TOF_IO_TIMEOUT_MS) == HAL_OK) ? 1 : 0;
+            if (i2cToF.movedOk[i]) i2cToF.assignedAddr[i] = target;
+
+            // 0x29 must now be silent. If it still answers, the write landed
+            // nowhere and this sensor collides with the next one released.
+            i2cToF.oldAddrGone[i] =
+                (HAL_I2C_IsDeviceReady(&hi2c1, VL53_DEFAULT_ADDR, 2,
+                                       TOF_IO_TIMEOUT_MS) != HAL_OK) ? 1 : 0;
+
+            // Same chip on the new address?
+            tofReadReg8(newAddr, VL53_MODEL_ID_REG, i2cToF.modelIdAfter[i]);
+
+            // Full driver bring-up: SPAD config, tuning settings, ref cal.
+            if (VL53L0X_Init(&tofDev[i], &hi2c1, static_cast<uint8_t>(target << 1)) == HAL_OK) {
+                i2cToF.initOk[i] = 1;
+                VL53L0X_SetTimingBudget(&tofDev[i], cfg::TOF_TIMING_BUDGET_US);
+                i2cToF.rangingOk[i] =
+                    (VL53L0X_StartContinuous(&tofDev[i], 0) == HAL_OK) ? 1 : 0;
+            }
+        }
+
+        i2cToF.stageOk[i] = (i2cToF.xshutHigh[i]        == 1 &&
+                             i2cToF.bootedAt29[i]       == 1 &&
+                             i2cToF.modelId[i]          == VL53_MODEL_ID &&
+                             i2cToF.scanCountAtStage[i] == (i + 1) &&
+                             i2cToF.movedOk[i]          == 1 &&
+                             i2cToF.oldAddrGone[i]      == 1 &&
+                             i2cToF.modelIdAfter[i]     == VL53_MODEL_ID &&
+                             i2cToF.assignedAddr[i]     == TOF_TARGET_ADDR[i] &&
+                             i2cToF.initOk[i]           == 1 &&
+                             i2cToF.rangingOk[i]        == 1) ? 1 : 0;
+    }
+
+    // ---- Stage 3: the finished bus ----------------------------------------
+    i2cToF.finalScanCount = scanToFBus(i2cToF.finalScanAddr, 8);
+
+    uint8_t allStages = 1;
+    for (int i = 0; i < 5; ++i) if (!i2cToF.stageOk[i]) allStages = 0;
+
+    i2cToF.bringUpPass = (i2cToF.afScl         == 4 &&
+                          i2cToF.afSda         == 4 &&
+                          i2cToF.moderScl      == 2 &&
+                          i2cToF.moderSda      == 2 &&
+                          i2cToF.idleScl       == 1 &&
+                          i2cToF.idleSda       == 1 &&
+                          i2cToF.countAllDown  == 0 &&
+                          i2cToF.finalScanCount == 5 &&
+                          allStages) ? 1 : 0;
+
+    i2cToF.pass = i2cToF.bringUpPass;
+
+    robot.led().set(i2cToF.bringUpPass ? Indicator::DOUBLE_BLINK
+                                       : Indicator::TRIPLE_BLINK);
+    lastToFPollMs = HAL_GetTick();
+}
+
+
+void Test_I2C_ToF_Update() {
+    robot.led().update();
+
+    const uint32_t now = HAL_GetTick();
+    if (now - lastToFPollMs < TOF_POLL_PERIOD_MS) return;
+    lastToFPollMs = now;
+
+    ++i2cToF.polls;
+
+    for (int i = 0; i < 5; ++i) {
+        if (!i2cToF.rangingOk[i]) continue;
+
+        uint16_t filtered = 0;
+        const HAL_StatusTypeDef st =
+            VL53L0X_ReadRangeContinuousFiltered(&tofDev[i], &filtered);
+
+        i2cToF.lastStatus[i] = tofDev[i].last_status;
+
+        if (st == HAL_OK) {
+            ++i2cToF.goodReads[i];
+            noteToFSample(i, tofDev[i].last_raw_mm, filtered);
+        } else if (st == HAL_ERROR) {
+            // Bad range status — out of range or no target. Normal when a
+            // sensor points into open air; only worrying if it NEVER clears.
+            ++i2cToF.badStatus[i];
+        }
+        // HAL_BUSY: no new sample yet. Expected most passes at ~30Hz vs 20Hz
+        // polling; not an error and deliberately not counted as one.
+    }
+
+    // Live verdict: every sensor that came up must still be producing data.
+    uint8_t alive = 1;
+    for (int i = 0; i < 5; ++i)
+        if (i2cToF.rangingOk[i] && i2cToF.goodReads[i] == 0 && i2cToF.polls > 40)
+            alive = 0;
+    if (!alive) i2cToF.pass = 0;
 }

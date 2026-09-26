@@ -26,25 +26,44 @@
  * Phase 2:
  *   P2_PIVOT : commanded 90 deg turn + hold  (wheels on ground)
  *   P2_DRIVE : drive straight ~1 cell holding heading (clear space ahead)
- * Bus tests (watch the i2cGyro global, NOT robot.*):
- *   RUN_TEST_I2C_GYRO : I2C2 + MPU6050. STANDALONE — skips robot.init()
- *                       entirely so the TIM3 ISR never touches I2C2 while
- *                       the test owns the bus.
+ * Bus / sensor diagnostics (watch ONE struct, expand it):
+ *   RUN_TEST_I2C_GYRO : I2C2 + MPU6050            -> i2cGyro
+ *   RUN_TEST_I2C_TOF  : I2C1 + all 5 VL53L0X      -> i2cToF
+ *                       staged XSHUT scan: before addressing, after each
+ *                       sensor boots at 0x29, and after each move
+ *   RUN_TEST_TOF_ONE  : I2C1 + ONE VL53L0X alone  -> tof1
+ *                       full single-sensor workup: bus, identity, address
+ *                       change both ways, ref-cal, single shot, continuous
+ *                       ranging, and every live failure mode. Exactly one
+ *                       sensor must be connected. XSHUT is not used for
+ *                       sequencing but IS released, because MX_GPIO_Init
+ *                       drives all five low and low = hardware standby.
+ * All three diagnostics are STANDALONE — robot.init() is skipped entirely, so
+ * the TIM3 ISR never touches I2C2 and WallSensorArray never runs a second,
+ * competing XSHUT sequence on I2C1. Enable ONE at a time: they share the
+ * status LED, so running two makes the blink verdict ambiguous.
  * Don't enable two motion tests at once. */
 //#define RUN_TEST_ENCODER
 //#define RUN_TEST_GYRO
-#define RUN_TEST_TOF
+//#define RUN_TEST_TOF
 //#define RUN_TEST_MOTOR
 //#define RUN_TEST_DRIVE
-//#define RUN_TEST_MODES
+#define RUN_TEST_MODES
 //#define P2_TEST_PIVOT
 //#define P2_TEST_DRIVE
 //#define RUN_TEST_I2C_GYRO
+//#define RUN_TEST_I2C_TOF
+//#define RUN_TEST_TOF_ONE
+
+#if defined(RUN_TEST_I2C_GYRO) || defined(RUN_TEST_I2C_TOF) || defined(RUN_TEST_TOF_ONE)
+  #define RUN_TEST_I2C_ANY
+#endif
 
 #include "Robot.hpp"
 #include "Tests.hpp"
 #include "Phase2Test.hpp"
 #include "Tests_I2C.hpp"
+#include "Tests_ToF_Single.hpp"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PTD */
@@ -85,12 +104,21 @@ int main(void)
   MX_TIM5_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
+#ifdef RUN_TEST_I2C_ANY
+  /* Diagnostics own their peripheral exclusively. robot.init() is deliberately
+   * NOT called: it blocks ~5s in gyro_.calibrate(), starts the 1kHz TIM3 ISR
+   * that reads the MPU6050 four times per millisecond, and runs
+   * WallSensorArray::init() which performs its own XSHUT address sequence on
+   * I2C1. Either would collide with the test and invalidate every result. */
 #ifdef RUN_TEST_I2C_GYRO
-  /* Bus test owns I2C2 exclusively. robot.init() is deliberately NOT called:
-   * it blocks ~5s in gyro_.calibrate() and then starts the 1kHz TIM3 ISR,
-   * which reads the MPU6050 four times per millisecond. Those reads would
-   * interleave with the test's transactions and invalidate every result. */
   Test_I2C_Gyro_Init();
+#endif
+#ifdef RUN_TEST_I2C_TOF
+  Test_I2C_ToF_Init();
+#endif
+#ifdef RUN_TEST_TOF_ONE
+  Test_ToF_Single_Init();
+#endif
 #else
   robot.init();
 
@@ -106,21 +134,29 @@ int main(void)
 #ifdef P2_TEST_DRIVE
   P2_OneCellDrive_Init();
 #endif
-#endif  /* RUN_TEST_I2C_GYRO */
+#endif  /* RUN_TEST_I2C_ANY */
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+#ifdef RUN_TEST_I2C_ANY
 #ifdef RUN_TEST_I2C_GYRO
     Test_I2C_Gyro_Update();
+#endif
+#ifdef RUN_TEST_I2C_TOF
+    Test_I2C_ToF_Update();
+#endif
+#ifdef RUN_TEST_TOF_ONE
+    Test_ToF_Single_Update();
+#endif
 #else
     robot.onMainLoop();
 
 #ifdef RUN_TEST_MOTOR
     Test_Motor_Update();
 #endif
-#endif  /* RUN_TEST_I2C_GYRO */
+#endif  /* RUN_TEST_I2C_ANY */
     /* USER CODE END WHILE */
     /* USER CODE BEGIN 3 */
   }
