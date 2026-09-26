@@ -32,7 +32,7 @@
  *   TEST_BUTTONS         btnTest      press everything
  * ---- motion (PA6 short starts, any press stops) ---------------------------
  *   TEST_MOTOR           motorTest    WHEELS OFF THE GROUND
- *   TEST_HEADING_HOLD    holdTest     twist by hand
+ *   TEST_HEADING_HOLD    holdTest     holds by itself once calibrated; twist by hand
  *   TEST_TURN            turnTest     on the floor, room to pivot
  *   TEST_DRIVE_CELLS     cellTest     straight clear floor; PA5 drives back
  *   TEST_NAV             navTest      in the maze, same as competition
@@ -41,12 +41,12 @@
 //#define TEST_I2C_TOF
 //#define TEST_TOF_SINGLE
 //#define TEST_TOF_LIVE
-//#define TEST_TOF_CAL
+#define TEST_TOF_CAL
 //#define TEST_GYRO
 //#define TEST_ENCODER
 //#define TEST_BUTTONS
 //#define TEST_MOTOR
-#define TEST_HEADING_HOLD
+//#define TEST_HEADING_HOLD
 //#define TEST_TURN
 //#define TEST_DRIVE_CELLS
 //#define TEST_NAV

@@ -48,12 +48,18 @@ constexpr uint32_t XSHUT_BOOT_DELAY_MS = 10;
  *
  *   true distance = CAL_A[i] * filtered + CAL_B[i]
  *
- * "true" = millimetres from the sensor's lens face to the target. Fill these
- * from TEST_TOF_CAL (tofCal.fitA[] / tofCal.fitB[]). Identity until then.
+ * "true" = millimetres from the sensor's lens face to the target. From
+ * TEST_TOF_CAL (tofCal.fitA[] / tofCal.fitB[]), 6 points 30..200mm against a
+ * flat barrier. Redo it if a sensor is remounted, replaced or re-covered.
  * Index: 0 Left, 1 LeftFront, 2 Front, 3 RightFront, 4 Right.
+ *
+ * Fit quality (worst point, mm):  L 2.1  LF 3.6  F 3.0  RF 2.8  R 2.2
+ *                                 (RF and R recaptured in a second session)
+ * Error at working distances:     front stop 34mm +1.0, side walls 47mm
+ *                                 +0.1 (L) / +0.3 (R), front wall 64mm -2.2
  * =========================================================================== */
-constexpr float CAL_A[5] = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
-constexpr float CAL_B[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+constexpr float CAL_A[5] = { 0.921611f, 0.942740f, 0.920044f, 0.925280f, 0.982126f };
+constexpr float CAL_B[5] = { -18.6685f, -20.2615f, -13.8093f,  -1.9881f, -20.7765f };
 
 } // namespace tofcfg
 #endif // __cplusplus

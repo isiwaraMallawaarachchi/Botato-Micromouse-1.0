@@ -10,8 +10,8 @@ struct Gains { float kp, ki, kd, iClamp; };
 
 // Tuned values carried over unchanged from the previous robot.
 constexpr Gains SPEED   = { 4.0f,   0.15f, 0.0f,   400.0f };  // mm/s error -> fwd PWM
-constexpr Gains RATE    = { 100.0f, 0.0f,  200.0f, 400.0f };  // deg/s error -> turn PWM
-constexpr Gains HEADING = { 4.0f,   0.0f,  0.5f,   200.0f };  // deg error -> deg/s
+constexpr Gains RATE    = { 10.0f, 0.0f,  25.0f, 400.0f };  // deg/s error -> turn PWM
+constexpr Gains HEADING = { 8.0f,   0.0f,  5.0f,   200.0f };  // deg error -> deg/s
 
 // Forward feed-forward, PWM per mm/s: fwd PWM = SPEED_FF * speed + speed PID.
 // The PID alone cannot hold a speed (its integral is clamped to 60 PWM), so

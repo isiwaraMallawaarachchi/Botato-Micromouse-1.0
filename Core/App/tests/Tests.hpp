@@ -210,10 +210,16 @@ void Test_Motor_Init();
 void Test_Motor_Update();
 
 // TEST_HEADING_HOLD  ->  holdTest   hold heading, twist it by hand
+// Starts holding automatically once calibrated (LED stops blinking).
+// PA6 short toggles it off / on (on = hold the CURRENT heading).
 struct HoldTestReport {
     uint8_t active;
     float   angleDeg, errDeg, maxAbsErrDeg, rateDps;
     int32_t pwmL, pwmR;
+    float   speedL, speedR;   // wheel response to the PWM
+    uint8_t noResponse;       // big PWM, wheels not turning: battery/VMOT/driver
+    uint8_t signFault;        // spun AWAY from the target: gyro vs motor direction
+                              // mismatch — motors stopped for safety
 };
 extern volatile HoldTestReport holdTest;
 void Test_HeadingHold_Init();

@@ -384,7 +384,6 @@ float Navigator::wallTrimDeg(float remaining) {
     const float rd = walls_->distanceMm(cfg::TOF_RIGHT);
     const bool  lSeen = walls_->seen(cfg::TOF_LEFT,  navcfg::SIDE_WALL_PRESENT_MM);
     const bool  rSeen = walls_->seen(cfg::TOF_RIGHT, navcfg::SIDE_WALL_PRESENT_MM);
-    const float half  = navcfg::WC_SUM_CENTERED_MM * 0.5f;
 
     float err = 0.0f, gain = 0.0f;
     if (lSeen && rSeen) {
@@ -396,11 +395,13 @@ float Navigator::wallTrimDeg(float remaining) {
             tel.wallMode = 1;
         }
     } else if (lSeen) {
-        err = 2.0f * (ld - half);          // x2 keeps one PID tuning valid
+        // Hold the distance this side reads when truly centred (includes the
+        // measured left/right asymmetry). x2 keeps one PID tuning valid.
+        err = 2.0f * (ld - navcfg::WC_LEFT_CENTERED_MM);
         gain = navcfg::WC_GAIN_ONE_WALL;
         tel.wallMode = 2;
     } else if (rSeen) {
-        err = 2.0f * (half - rd);
+        err = 2.0f * (navcfg::WC_RIGHT_CENTERED_MM - rd);
         gain = navcfg::WC_GAIN_ONE_WALL;
         tel.wallMode = 3;
     }

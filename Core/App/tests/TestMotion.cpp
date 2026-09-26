@@ -139,9 +139,30 @@ void Test_Motor_Update() {
 }
 
 /* ===========================================================================
- * TEST_HEADING_HOLD — PA6 short toggles. Twist the robot by hand; it must
- * return to heading 0 without oscillating.
+ * TEST_HEADING_HOLD — holds heading 0 as soon as calibration finishes.
+ * Twist the robot by hand and let go: it must return to 0 without
+ * oscillating. PA6 short toggles holding off / on.
  * =========================================================================== */
+
+namespace {
+    constexpr int32_t  BIG_PWM          = 1500;
+    constexpr float    STILL_MMPS       = 10.0f;
+    constexpr uint32_t NO_RESPONSE_MS   = 300;
+    constexpr float    RUNAWAY_ERR_DEG  = 180.0f;  // past a half turn: no hand twist
+    constexpr float    RUNAWAY_RATE_DPS = 60.0f;   // ...and never keeps spinning
+    bool     holdStarted  = false;
+    uint32_t bigPwmSince  = 0;
+
+    void holdOn() {
+        volatile HoldTestReport& h = holdTest;
+        armControl();                       // holds the heading it has right now
+        h.active = 1;
+        h.maxAbsErrDeg = 0.0f;
+        h.noResponse = h.signFault = 0;
+        bigPwmSince = 0;
+        robot.led().set(Indicator::OFF);
+    }
+}
 
 void Test_HeadingHold_Init() { th::coreInit(); }
 
@@ -149,11 +170,13 @@ void Test_HeadingHold_Update() {
     if (!th::coreService()) return;
     volatile HoldTestReport& h = holdTest;
     ControlLoop& c = robot.control();
+    const uint32_t now = HAL_GetTick();
+
+    if (!holdStarted) { holdStarted = true; holdOn(); }      // no button needed
 
     if (robot.buttons().takeSearchShort()) {
-        h.active = !h.active;
-        if (h.active) { armControl(); h.maxAbsErrDeg = 0.0f; }
-        else          { c.enable(false); }
+        if (h.active) { c.enable(false); h.active = 0; }
+        else          { holdOn(); }
     }
 
     h.angleDeg = c.headingDeg();
@@ -161,7 +184,32 @@ void Test_HeadingHold_Update() {
     h.rateDps  = c.pvW();
     h.pwmL     = robot.drive().lastLeftPwm();
     h.pwmR     = robot.drive().lastRightPwm();
-    if (h.active && std::fabs(h.errDeg) > h.maxAbsErrDeg) h.maxAbsErrDeg = std::fabs(h.errDeg);
+    h.speedL   = robot.encoderL().speedMmPerS();
+    h.speedR   = robot.encoderR().speedMmPerS();
+    if (!h.active) return;
+
+    if (std::fabs(h.errDeg) > h.maxAbsErrDeg) h.maxAbsErrDeg = std::fabs(h.errDeg);
+
+    // Driving hard but the wheels don't move: no motor power reaching them.
+    const bool big   = h.pwmL > BIG_PWM || h.pwmL < -BIG_PWM || h.pwmR > BIG_PWM || h.pwmR < -BIG_PWM;
+    const bool still = std::fabs(h.speedL) < STILL_MMPS && std::fabs(h.speedR) < STILL_MMPS;
+    if (big && still) {
+        if (bigPwmSince == 0) bigPwmSince = now;
+        else if (now - bigPwmSince > NO_RESPONSE_MS) h.noResponse = 1;
+    } else {
+        bigPwmSince = 0;
+    }
+
+    // Moving further from the target, fast, on its own: the correction pushes
+    // the wrong way. Stop before it spins in circles.
+    const bool movingAway = (h.errDeg * h.rateDps) < 0.0f;
+    if (std::fabs(h.errDeg) > RUNAWAY_ERR_DEG && movingAway &&
+        std::fabs(h.rateDps) > RUNAWAY_RATE_DPS) {
+        c.enable(false);
+        h.active = 0;
+        h.signFault = 1;
+        th::verdict(false);
+    }
 }
 
 /* ===========================================================================
