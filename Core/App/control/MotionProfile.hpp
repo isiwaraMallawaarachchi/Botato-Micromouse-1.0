@@ -85,6 +85,49 @@ private:
     float goal_ = 0.0f;
 };
 
+// Curved-turn shape. u = distance along the curve / curve length, 0..1.
+// Turn rate is a trapezoid: ramps up over [0, rho], constant, ramps down over
+// [1-rho, 1]. rate() is normalised so its mean over the curve is 1; angle()
+// is its integral, 0..1 (fraction of the turn done). The shape is symmetric,
+// so the robot leaves the curve exactly on the new corridor's centreline.
+struct ArcShape {
+    static float rate(float u, float rho) {
+        const float peak = 1.0f / (1.0f - rho);
+        if (u <= 0.0f || u >= 1.0f) return 0.0f;
+        if (u < rho)        return peak * u / rho;
+        if (u > 1.0f - rho) return peak * (1.0f - u) / rho;
+        return peak;
+    }
+    // d(rate)/du: +peak/rho while ramping up, -peak/rho ramping down, else 0.
+    static float rateSlope(float u, float rho) {
+        const float peak = 1.0f / (1.0f - rho);
+        if (u <= 0.0f || u >= 1.0f) return 0.0f;
+        if (u < rho)        return  peak / rho;
+        if (u > 1.0f - rho) return -peak / rho;
+        return 0.0f;
+    }
+    static float angle(float u, float rho) {
+        const float peak = 1.0f / (1.0f - rho);
+        if (u <= 0.0f) return 0.0f;
+        if (u >= 1.0f) return 1.0f;
+        if (u < rho)        return peak * u * u / (2.0f * rho);
+        if (u > 1.0f - rho) { const float w = 1.0f - u; return 1.0f - peak * w * w / (2.0f * rho); }
+        return peak * (0.5f * rho + (u - rho));
+    }
+    // Curve length / radius, so that a 90-degree curve starting on one
+    // centreline ends on the perpendicular one `radius` further on (for a
+    // circle this is pi/2). Integrated numerically once; cheap.
+    static float lengthPerRadius(float rho) {
+        constexpr int N = 400;
+        float sum = 0.0f;
+        for (int i = 0; i < N; ++i) {
+            const float u = (static_cast<float>(i) + 0.5f) / N;
+            sum += std::cos(1.5707963f * angle(u, rho));
+        }
+        return static_cast<float>(N) / sum;
+    }
+};
+
 // Speed to command while approaching a stop point `remaining` mm away.
 // The braking curve reaches zero `creepZone` mm BEFORE the stop point, and the
 // robot covers those last millimetres at `creep`. Braking straight onto the

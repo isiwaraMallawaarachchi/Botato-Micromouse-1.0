@@ -49,7 +49,7 @@ constexpr float FREE_RUN_MMPS     = MOTOR_RPM / 60.0f * WHEEL_CIRCUM_MM;  // ~69
 
 /* ---- Body (measured) ------------------------------------------------------ */
 constexpr float BODY_LENGTH_MM    = 85.2f;
-constexpr float BODY_WIDTH_MM     = 85.2f;
+constexpr float BODY_WIDTH_MM     = 81.5f;    // widest point incl. wheels (measured)
 constexpr float AXLE_TO_FRONT_MM  = 55.7f;
 constexpr float AXLE_TO_REAR_MM   = BODY_LENGTH_MM - AXLE_TO_FRONT_MM;    // 29.5
 
@@ -109,6 +109,31 @@ constexpr float ACCEL_MMPS2       = 1500.0f;
 constexpr float DECEL_MMPS2       = 3500.0f;
 constexpr float TURN_RATE_DPS     = 240.0f;
 constexpr float TURN_ACCEL_DPS2   = 1200.0f;
+
+/* ===========================================================================
+ * >>> CURVED TURNS (speed run and its drive home) <<<
+ *
+ * On a speed run, and on the drive home after it, 90-degree corners are taken
+ * as a smooth curve instead of stop - turn on the spot - go. The search run
+ * and every stop (goal, home) still turn on the spot.
+ *
+ * CURVED_TURNS_DEFAULT is the setting after power-on / reset. It can also be
+ * switched at any time the robot is idle, without reprogramming:
+ *     hold PA5 (fast button) for 3 s
+ *         LED solid ON for 1.5 s   -> curves ON
+ *         LED rapid flicker 1.5 s  -> curves OFF (turn on the spot)
+ * The choice lasts until power-off / reset.
+ *
+ * Limit (see notes): along-the-corridor position is corrected only by front
+ * walls. On long chains of curves with no front wall, small per-curve errors
+ * (1-4 mm) can add up. Watch the first runs; set the default to true once
+ * curves have run cleanly on your maze.
+ *
+ * CURVE_SPEED_MMPS: speed through the curve. The robot slows to this before
+ * each curve and speeds up again after it; straights keep SPEED_RUN_MMPS.
+ * =========================================================================== */
+constexpr bool  CURVED_TURNS_DEFAULT = false;  // OFF until tried on your real maze (see above)
+constexpr float CURVE_SPEED_MMPS     = 300.0f;
 
 } // namespace cfg
 

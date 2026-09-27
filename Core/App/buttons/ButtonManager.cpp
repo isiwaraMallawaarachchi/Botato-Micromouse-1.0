@@ -17,19 +17,26 @@ void ButtonManager::init() {
     lastSample_ = HAL_GetTick();
 }
 
+// Debounced level: follows the raw pin only after it has been steady for
+// DEBOUNCE_MS. Returns the debounced state.
+bool ButtonManager::debounce(Btn& b, bool raw, uint32_t now) {
+    if (raw != b.raw) { b.raw = raw; b.rawSince = now; }
+    return ((now - b.rawSince) >= btncfg::DEBOUNCE_MS) ? b.raw : b.pressed;
+}
+
 void ButtonManager::update() {
     const uint32_t now = HAL_GetTick();
     if (now - lastSample_ < btncfg::SAMPLE_MS) return;
     lastSample_ = now;
 
-    const bool s = searchRaw();
-    const bool f = fastRaw();
+    const bool s = debounce(search_, searchRaw(), now);
+    const bool f = debounce(fast_,   fastRaw(),   now);
 
     if (s && f && !bothLatched_) { bothEvt_ = true; bothLatched_ = true; }
 
     // search: press, long-press while held, short on release
     if (s && !search_.pressed) {
-        search_ = { true, now, false };
+        search_.pressed = true; search_.downTime = now; search_.longFired = false;
     } else if (s && !search_.longFired && !bothLatched_ &&
                (now - search_.downTime) >= btncfg::LONGPRESS_MS) {
         searchLongEvt_ = true;
@@ -39,11 +46,15 @@ void ButtonManager::update() {
         search_.pressed = false;
     }
 
-    // fast: short on release
+    // fast: press, long-press while held, short on release
     if (f && !fast_.pressed) {
-        fast_ = { true, now, false };
+        fast_.pressed = true; fast_.downTime = now; fast_.longFired = false;
+    } else if (f && !fast_.longFired && !bothLatched_ &&
+               (now - fast_.downTime) >= btncfg::LONGPRESS_MS) {
+        fastLongEvt_ = true;
+        fast_.longFired = true;
     } else if (!f && fast_.pressed) {
-        if (!bothLatched_) fastShortEvt_ = true;
+        if (!fast_.longFired && !bothLatched_) fastShortEvt_ = true;
         fast_.pressed = false;
     }
 
@@ -55,6 +66,7 @@ void ButtonManager::update() {
 bool ButtonManager::takeSearchShort() { return take(searchShortEvt_); }
 bool ButtonManager::takeFastShort()   { return take(fastShortEvt_); }
 bool ButtonManager::takeSearchLong()  { return take(searchLongEvt_); }
+bool ButtonManager::takeFastLong()    { return take(fastLongEvt_); }
 bool ButtonManager::takeBothPress()   { return take(bothEvt_); }
 
 bool ButtonManager::takeAny() {
@@ -62,5 +74,6 @@ bool ButtonManager::takeAny() {
     const bool b = takeFastShort();
     const bool c = takeSearchLong();
     const bool d = takeBothPress();
-    return a || b || c || d;
+    const bool e = takeFastLong();
+    return a || b || c || d || e;
 }

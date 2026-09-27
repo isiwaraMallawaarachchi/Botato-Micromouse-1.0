@@ -55,6 +55,16 @@ void Indicator::update() {
     case OFF: write(false); break;
     case ON:  write(true);  break;
 
+    case HEARTBEAT:
+        if (dt >= ledcfg::HEART_PERIOD_MS) lastMs_ = now;
+        write((now - lastMs_) < ledcfg::HEART_ON_MS);
+        break;
+
+    case RAPID:
+        if (dt >= ledcfg::RAPID_MS) { lastMs_ = now; step_ ^= 1; }
+        write(step_ == 0);
+        break;
+
     case BLINK:
         if (dt >= ledcfg::BLINK_MS) { lastMs_ = now; step_ ^= 1; }
         write(step_ == 0);

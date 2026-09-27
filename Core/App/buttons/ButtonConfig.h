@@ -5,8 +5,11 @@
 
 namespace btncfg {
 
-constexpr uint32_t SAMPLE_MS    = 30;     // debounce: sample interval
-constexpr uint32_t LONGPRESS_MS = 3000;   // PA6 held this long = recalibrate
+constexpr uint32_t SAMPLE_MS    = 5;      // raw sampling interval
+// A change counts only after the pin has held its new level this long, so a
+// bouncing contact gives exactly one press (no phantom second press).
+constexpr uint32_t DEBOUNCE_MS  = 20;
+constexpr uint32_t LONGPRESS_MS = 3000;   // held this long = long press (PA6 recalibrate, PA5 curves)
 
 } // namespace btncfg
 

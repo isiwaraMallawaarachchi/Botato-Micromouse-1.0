@@ -12,6 +12,7 @@ volatile MotorTestReport motorTest;
 volatile HoldTestReport  holdTest;
 volatile TurnTestReport  turnTest;
 volatile CellTestReport  cellTest;
+volatile CurveTestReport curveTest;
 volatile NavTestReport   navTest;
 
 namespace {
@@ -296,6 +297,96 @@ void Test_Turn_Update() {
         }
     }
     startStep();
+}
+
+/* ===========================================================================
+ * TEST_CURVE — one curve with an exact start (encoders only, no walls), so its
+ * SHAPE can be tuned on the floor with a tape measure. PA6: right, PA5: left.
+ * =========================================================================== */
+
+namespace {
+    int      curvePhase = 0;                 // 0 idle, 1 lead-in, 2 curve, 3 lead-out, 4 settle
+    float    curveDir = -90.0f, curveStartMm = 0.0f, curveOutStartMm = 0.0f;
+    uint32_t curveArcStartMs = 0, curveSettleMs = 0;
+    constexpr float ENC_PER_REAL = cfg::CELL_TRAVEL_MM / cfg::CELL_PITCH_MM;
+
+    void curveStart(float dir) {
+        volatile CurveTestReport& r = curveTest;
+        curveDir = dir;
+        armControl();
+        robot.control().setForwardSpeed(cfg::CURVE_SPEED_MMPS);
+        curveStartMm = axleMm();
+        curvePhase = 1;
+        r.active = 1; r.dir = (dir < 0.0f) ? 1 : 2; r.runs = r.runs + 1;
+        r.peakTurnPwm = 0.0f; r.pass = 0;
+        robot.led().set(Indicator::OFF);
+    }
+}
+
+void Test_Curve_Init() {
+    th::coreInit();
+    curveTest.expectForwardMm = testcfg::CURVE_LEAD_IN_MM  + 0.5f * cfg::CELL_PITCH_MM;
+    curveTest.expectSideMm    = testcfg::CURVE_LEAD_OUT_MM + 0.5f * cfg::CELL_PITCH_MM;
+}
+
+void Test_Curve_Update() {
+    if (!th::coreService()) return;
+    volatile CurveTestReport& r = curveTest;
+    ControlLoop& c = robot.control();
+    ButtonManager& b = robot.buttons();
+    const uint32_t now = HAL_GetTick();
+
+    if (curvePhase == 0) {
+        if (b.takeSearchShort())    curveStart(-90.0f);    // right
+        else if (b.takeFastShort()) curveStart(+90.0f);    // left
+        return;
+    }
+    if (b.takeAny()) { c.enable(false); curvePhase = 0; r.active = 0; return; }
+
+    const float R = 0.5f * cfg::CELL_TRAVEL_MM;
+    const float L = R * ArcShape::lengthPerRadius(ctrlcfg::ARC_RAMP_FRAC);
+
+    switch (curvePhase) {
+    case 1:                                             // straight lead-in at curve speed
+        if (axleMm() - curveStartMm >= testcfg::CURVE_LEAD_IN_MM * ENC_PER_REAL) {
+            c.arcTurn(curveDir, L);
+            curveArcStartMs = now;
+            curvePhase = 2;
+        }
+        break;
+    case 2: {                                           // the curve
+        const float tp = 0.5f * std::fabs(static_cast<float>(robot.drive().lastRightPwm() -
+                                                             robot.drive().lastLeftPwm()));
+        if (tp > r.peakTurnPwm) r.peakTurnPwm = tp;
+        if (!c.arcActive()) {
+            r.arcMs = now - curveArcStartMs;
+            r.arcMaxLagDeg = c.arcMaxLagDeg();
+            r.arcEndErrDeg = c.arcEndErrDeg();
+            // continue on the new line: the curve ended R past the corner
+            curveOutStartMm = axleMm() - 0.0f;
+            curvePhase = 3;
+        }
+        break;
+    }
+    case 3: {                                           // straight lead-out, then stop
+        const float remaining = testcfg::CURVE_LEAD_OUT_MM * ENC_PER_REAL - (axleMm() - curveOutStartMm);
+        const float v = approachSpeed(remaining, cfg::CURVE_SPEED_MMPS, navcfg::BRAKE_DECEL_MMPS2,
+                                      navcfg::CREEP_MMPS, navcfg::CREEP_ZONE_MM, navcfg::STOP_TOL_MM);
+        c.setForwardSpeed(v);
+        if (v == 0.0f) { curvePhase = 4; curveSettleMs = now; }
+        break;
+    }
+    case 4:
+        if ((std::fabs(c.pvX()) < navcfg::SETTLE_MMPS && c.speedRef() == 0.0f) ||
+            now - curveSettleMs > navcfg::SETTLE_TIMEOUT_MS) {
+            r.headingErrStopDeg = c.headingErr();
+            c.enable(false);
+            curvePhase = 0; r.active = 0;
+            r.pass = std::fabs(r.arcMaxLagDeg) < 5.0f && std::fabs(r.arcEndErrDeg) < 3.0f;
+            th::verdict(r.pass);
+        }
+        break;
+    }
 }
 
 /* ===========================================================================

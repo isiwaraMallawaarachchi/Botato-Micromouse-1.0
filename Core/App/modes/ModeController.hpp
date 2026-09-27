@@ -29,6 +29,14 @@
  *
  * A run that finishes (home and parked) shows a double flash for 3s, so
  * "finished" never looks the same as "still running" (LED off in both).
+ *
+ * PA5 long (hold 3s) while idle: switch between NORMAL and CURVED speed
+ * runs, back and forth as often as you like. While idle the LED shows the
+ * mode: OFF = normal, HEARTBEAT (short flash every second) = curved.
+ *
+ * Button handling: one debounced press = one event; after the robot acts on
+ * a press, other pending events are discarded, and presses are ignored for
+ * RUN_GRACE_MS after a run starts, so a start press can never abort its run.
  */
 class ModeController {
 public:
@@ -56,7 +64,10 @@ private:
     uint32_t refusedUntil_ = 0;     // 5-flash "no map" notice, until this time
     uint32_t speedRefused_ = 0;     // Live Expression: PA5 presses refused
 
+    uint32_t runStartMs_   = 0;
+
     void calibrate();
+    void idleLed();                 // OFF (normal mode) or HEARTBEAT (curved mode)
     void enterFault(Fault f);
     void enterIdle();
     void startRun(State s);

@@ -11,6 +11,7 @@ void Navigator::init(ControlLoop* ctrl, WallSensorArray* walls,
                      Encoder* encL, Encoder* encR) {
     ctrl_ = ctrl; walls_ = walls; encL_ = encL; encR_ = encR;
     clearMap();
+    arcLenMm_ = arcRadiusMm() * ArcShape::lengthPerRadius(ctrlcfg::ARC_RAMP_FRAC);
     state_ = IDLE;
     phase_ = FINISHED;
 }
@@ -43,6 +44,7 @@ void Navigator::begin(State s, float cruise) {
     segmentEndMm_ = navcfg::START_OFFSET_MM - (selfParked_ ? navcfg::PARK_GAP_MM : 0.0f);
     selfParked_ = false;
     decided_ = braking_ = homing_ = false;
+    arcPending_ = false;
     returnKnown_ = false;
     cacheKey_ = -1;
     sideCellKey_ = -1;
@@ -87,6 +89,7 @@ void Navigator::update() {
             case SETTLE: updateSettle(); break;
             case TURN:   updateTurn();   break;
             case PARK:   updatePark();   break;
+            case ARC:    updateArc();    break;
             default: break;
         }
     }
@@ -107,9 +110,18 @@ void Navigator::updateDrive() {
     // Stopping in this cell: take the stop point from the front wall if one
     // is in range. Absolute beats relative (DECISIONS.md #25).
     if (braking_) remaining = frontReferenced(traveled, remaining);
+    if (arcPending_) remaining = frontArcReferenced(traveled, remaining);
+    // Normal-mode speed run (and its drive home): the map knows the target
+    // cell's front wall, so take the distance to it from the front ToF as soon
+    // as it is in range — braking is then planned from the real distance, not
+    // from encoder distance that may have drifted since the last wall.
+    else if (knownRun() && !arcsOn() && !braking_) remaining = frontArcReferenced(traveled, remaining);
 
-    // Decision point: side sensors are now over the target cell's centre.
-    if (!decided_ && remaining <= navcfg::SENSE_LOOKAHEAD_MM) {
+    // Decision point. Search: side sensors over the target cell's centre.
+    // Known-path runs with curves: early enough to start a curve on time.
+    const float decideAt = arcsOn() ? arcStartMm() + navcfg::ARC_DECIDE_MARGIN_MM
+                                    : navcfg::SENSE_LOOKAHEAD_MM;
+    if (!decided_ && remaining <= decideAt) {
         // Speed run and its return trust the map: no sensing, so a glitch can
         // never add a false wall to the map the next speed run relies on.
         if (state_ != SPEED && !returnKnown_) senseWalls();
@@ -121,10 +133,21 @@ void Navigator::updateDrive() {
             segmentEndMm_ += cfg::CELL_TRAVEL_MM;   // exact pitch: no drift
             remaining     += cfg::CELL_TRAVEL_MM;
             Planner::stepForward(pose_);
+        } else if (arcsOn() && (pending_ == ACT_LEFT || pending_ == ACT_RIGHT)) {
+            decided_    = true;                     // curve: no stop in this cell
+            arcPending_ = true;
+            turn_       = (pending_ == ACT_LEFT) ? TURN_LEFT : TURN_RIGHT;
         } else {
             decided_ = braking_ = true;
             stallSinceMs_ = 0;
         }
+    }
+
+    // Curve start: half a cell before the turn cell's centre (+ ARC_START_ADVANCE_MM).
+    if (arcPending_ && remaining <= arcStartMm()) {
+        startArc(traveled);
+        publish(remaining, ctrl_->speedCmd());
+        return;
     }
 
     float v;
@@ -145,11 +168,24 @@ void Navigator::updateDrive() {
     } else {
         v = cruise_;
         // Speed run (and the return after it): the map says how far the
-        // straight goes, so accelerate along it and brake early for the turn.
-        if (state_ == SPEED || returnKnown_) {
-            const float stopDist = remaining + straightAheadMm() - navcfg::CREEP_ZONE_MM;
-            const float vBrake = std::sqrt(2.0f * navcfg::BRAKE_DECEL_MMPS2 *
-                                           (stopDist > 0.0f ? stopDist : 0.0f));
+        // straight goes, so accelerate along it and brake early for what ends
+        // it — down to CURVE_SPEED for a curve, to a stop for anything else.
+        if (knownRun()) {
+            const float vc = (cfg::CURVE_SPEED_MMPS < cruise_) ? cfg::CURVE_SPEED_MMPS : cruise_;
+            float vBrake;
+            if (arcPending_) {
+                const float d = remaining - arcStartMm();
+                vBrake = std::sqrt(vc * vc + 2.0f * navcfg::BRAKE_DECEL_MMPS2 * (d > 0.0f ? d : 0.0f));
+            } else {
+                const float ahead = remaining + straightAheadMm();
+                if (eventArc_) {
+                    const float d = ahead - arcStartMm();
+                    vBrake = std::sqrt(vc * vc + 2.0f * navcfg::BRAKE_DECEL_MMPS2 * (d > 0.0f ? d : 0.0f));
+                } else {
+                    const float d = ahead - navcfg::CREEP_ZONE_MM;
+                    vBrake = std::sqrt(2.0f * navcfg::BRAKE_DECEL_MMPS2 * (d > 0.0f ? d : 0.0f));
+                }
+            }
             if (vBrake < v) v = vBrake;
         }
     }
@@ -299,6 +335,7 @@ void Navigator::act(Action a) {
         if (state_ == SEARCH) mapReady_ = true;
         returnKnown_ = (state_ == SPEED);
         state_   = RETURN;
+        cacheKey_ = -1;              // lookahead must re-walk the path home
         // After a speed run the way home is known: go back at speed-run pace
         // (saves maze time; only the run TO the goal is scored).
         cruise_  = returnKnown_ ? cfg::SPEED_RUN_MMPS : cfg::SEARCH_SPEED_MMPS;
@@ -378,6 +415,56 @@ void Navigator::updatePark() {
     publish(remaining, -v);
 }
 
+/* ---- curved turns ---------------------------------------------------------- */
+
+void Navigator::startArc(float traveled) {
+    arcPending_ = false;
+    arcStartMm_ = traveled;
+
+
+    const float vc = (cfg::CURVE_SPEED_MMPS < cruise_) ? cfg::CURVE_SPEED_MMPS : cruise_;
+    ctrl_->setForwardSpeed(vc);
+    ctrl_->setHeadingTrim(0.0f);
+    ctrl_->arcTurn(Planner::turnDegrees(turn_), arcLenMm_);
+    ++tel.arcs;
+    phase_ = ARC;
+}
+
+void Navigator::updateArc() {
+    const float vc = (cfg::CURVE_SPEED_MMPS < cruise_) ? cfg::CURVE_SPEED_MMPS : cruise_;
+    ctrl_->setForwardSpeed(vc);
+    if (ctrl_->arcActive()) { publish(0.0f, vc); return; }
+
+    // Curve done: the axle is half a cell past the turn cell's centre, on the
+    // new corridor's centreline. Target the next cell's centre from there,
+    // measured from where the curve began so nothing is lost to timing.
+    Planner::applyTurn(pose_, turn_);
+    Planner::stepForward(pose_);
+    segmentEndMm_ = arcStartMm_ + arcLenMm_ + (cfg::CELL_TRAVEL_MM - arcRadiusMm());
+    decided_ = braking_ = false;
+    pidWall_.reset();
+    phase_ = DRIVE;
+}
+
+// Known-path run, target cell with a known front wall: take the position
+// along the corridor from that wall (so curves start on time). The ToF gives
+// real mm; segment distances are encoder mm (CELL_TRAVEL_MM per real
+// CELL_PITCH_MM), so convert.
+float Navigator::frontArcReferenced(float traveled, float remaining) {
+    tel.frontRef = 0;
+    if (!map_.isVisited(pose_.x, pose_.y) || !map_.hasWall(pose_.x, pose_.y, pose_.facing))
+        return remaining;
+    if (!walls_->ok(cfg::TOF_FRONT)) return remaining;
+    const float fd = walls_->distanceMm(cfg::TOF_FRONT);
+    if (fd > navcfg::ARC_FRONT_REF_MAX_MM) return remaining;
+    const float realToCentre = fd - ctrl_->speedRef() * navcfg::FRONT_LATENCY_S - navcfg::FRONT_STOP_MM;
+    const float r = realToCentre * (cfg::CELL_TRAVEL_MM / cfg::CELL_PITCH_MM);
+    if (std::fabs(r - remaining) > navcfg::ARC_FRONT_REF_GATE_MM) return remaining;   // not that wall
+    segmentEndMm_ = traveled + r;
+    tel.frontRef  = 1;
+    return r;
+}
+
 /* ---- speed-run lookahead --------------------------------------------------- */
 
 // How far the known path runs straight beyond the target cell. The flood
@@ -387,11 +474,18 @@ float Navigator::straightAheadMm() {
     if (key != cacheKey_) {
         cacheKey_ = key;
         straightCache_ = 0;
+        eventArc_ = false;
         int x = pose_.x, y = pose_.y;
         for (int i = 0; i < maze::MAX_DIM; ++i) {
-            if (map_.isGoal(x, y)) break;
+            if (state_ == SPEED && map_.isGoal(x, y)) break;                    // stop
+            if (state_ == RETURN && x == startX_ && y == maze::START_Y) break;  // stop
             Dir d;
-            if (!flood_.nextDir(map_, x, y, pose_.facing, d) || d != pose_.facing) break;
+            if (!flood_.nextDir(map_, x, y, pose_.facing, d)) break;            // stop
+            if (d != pose_.facing) {
+                const Turn t = Planner::turnFor(pose_.facing, d);
+                eventArc_ = arcsOn() && (t == TURN_LEFT || t == TURN_RIGHT);    // else stop
+                break;
+            }
             MazeMap::neighbour(x, y, d, x, y);
             ++straightCache_;
         }

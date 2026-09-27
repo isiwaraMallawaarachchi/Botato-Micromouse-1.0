@@ -8,7 +8,7 @@
  * loop (DECISIONS.md #6: deliberately not EXTI).
  *
  *   PA6 (BTN2) "search":  short press, long press
- *   PA5 (BTN1) "fast":    short press
+ *   PA5 (BTN1) "fast":    short press, long press
  *   both together:        one both-press event, suppresses the shorts
  *
  * Events are one-shot: take*() returns true once, then clears.
@@ -21,6 +21,7 @@ public:
     bool takeSearchShort();
     bool takeFastShort();
     bool takeSearchLong();
+    bool takeFastLong();
     bool takeBothPress();
     bool takeAny();              // consumes every pending event
 
@@ -29,15 +30,19 @@ public:
 
 private:
     struct Btn {
-        bool     pressed   = false;
+        bool     pressed   = false;   // debounced state
         uint32_t downTime  = 0;
         bool     longFired = false;
+        bool     raw       = false;   // last raw sample
+        uint32_t rawSince  = 0;       // when the raw level last changed
     };
     Btn search_, fast_;
+    static bool debounce(Btn& b, bool raw, uint32_t now);
 
     bool searchShortEvt_ = false;
     bool fastShortEvt_   = false;
     bool searchLongEvt_  = false;
+    bool fastLongEvt_    = false;
     bool bothEvt_        = false;
     bool bothLatched_    = false;
     uint32_t lastSample_ = 0;

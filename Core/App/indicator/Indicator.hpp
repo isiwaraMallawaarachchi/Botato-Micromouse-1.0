@@ -11,13 +11,15 @@
  *   OFF        once calibrated, and whenever idle or running
  *   pulse()    one short flash per navigation decision, then back to OFF
  *   code(n)    fault: n quick flashes, pause, repeat (ModeController::Fault)
+ *   HEARTBEAT  idle in CURVED speed-run mode: short flash once a second
+ *              (normal mode: OFF when idle)
  *   solid ON   Error_Handler (HAL init failure)
  *
  * Test builds: PASS = code(2), FAIL = code(3).
  */
 class Indicator {
 public:
-    enum Pattern { OFF, ON, BLINK, PASS, FAIL, CODE };
+    enum Pattern { OFF, ON, BLINK, PASS, FAIL, CODE, RAPID, HEARTBEAT };
 
     void init();
     void set(Pattern p);

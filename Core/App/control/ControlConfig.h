@@ -34,6 +34,32 @@ constexpr float HEADING_CORR_MAX_DPS  = 120.0f;
 // the forward command of PWM headroom.
 constexpr float MAX_TURN_PWM_DRIVING  = 1200.0f;
 
+// ---- Curved turns ----------------------------------------------------------
+// Turn rate ramps up over the first ARC_RAMP_FRAC of the curve and down over
+// the last, so the heading never steps (your rate loop is soft: kp 10).
+constexpr float ARC_RAMP_FRAC    = 0.25f;
+// PWM that makes the robot turn at 1 deg/s while driving: the wheel speed
+// difference for that rate (WHEELBASE/2 * rad) times SPEED_FF. Fed forward
+// during a curve so the rate PID only has to correct, not do the whole turn.
+constexpr float ARC_RATE_FF      = SPEED_FF * (cfg::WHEELBASE_MM * 0.5f) * (cfg::PI_F / 180.0f);
+// Turn-PWM cap during a curve (a curve needs ~1100 at 300 mm/s; the normal
+// cap while driving is MAX_TURN_PWM_DRIVING).
+constexpr float MAX_TURN_PWM_ARC = 3000.0f;
+
+// >>> CURVE SHAPE TUNING (tune with TEST_CURVE, see tests/TestConfig.h) <<<
+// If the heading falls behind the planned heading during a curve, the robot
+// keeps going straight a little too long and the curve comes out WIDE.
+//   ARC_TURN_FF_GAIN  scales the turning push fed forward in a curve.
+//                     > 1.0 turns harder (tighter curve), < 1.0 softer.
+//                     Steps of 0.05. Default 1.0 = the value from SPEED_FF.
+//   ARC_TURN_LEAD_S   leads the turn command by the motor's response lag, so
+//                     the turn rate builds up on time at the start of the
+//                     curve. 0 = off; try MOTOR_TAU_S (0.040).
+// Watch robot.ctrl_.arcMaxLagDeg_ (how far the heading fell behind, worst
+// point) and robot.ctrl_.arcEndErrDeg_ (heading error as the curve ended).
+constexpr float ARC_TURN_FF_GAIN = 1.70f;
+constexpr float ARC_TURN_LEAD_S  = 0.10f;
+
 // Largest heading lean the wall-centring trim may request.
 constexpr float MAX_HEADING_TRIM_DEG  = 12.0f;
 

@@ -181,7 +181,8 @@ void Test_Encoder_Update();
 struct BtnTestReport {
     uint32_t searchShort, fastShort, searchLong, both;
     uint8_t  searchHeld, fastHeld;
-    uint8_t  lastEvent;       // 1 PA6 short, 2 PA5 short, 3 PA6 long, 4 both
+    uint8_t  lastEvent;       // 1 PA6 short, 2 PA5 short, 3 PA6 long, 4 both, 5 PA5 long
+    uint32_t fastLong;        // PA5 held >3s (curves ON/OFF in the competition build)
 };
 extern volatile BtnTestReport btnTest;
 void Test_Buttons_Init();
@@ -240,6 +241,29 @@ struct TurnTestReport {
 extern volatile TurnTestReport turnTest;
 void Test_Turn_Init();
 void Test_Turn_Update();
+
+// TEST_CURVE  ->  curveTest         one curve on open floor, for tuning its SHAPE
+// PA6 short: RIGHT curve, PA5 short: LEFT curve. Axle on a start mark, facing
+// along a taped line. The robot drives CURVE_LEAD_IN_MM, curves, drives
+// CURVE_LEAD_OUT_MM and stops. Mark the ideal end point on the floor:
+//   expectForwardMm ahead of the start mark (along the start line) and
+//   expectSideMm to the right (PA6) or left (PA5).
+// Compare where the AXLE (wheel centres) ends up:
+//   further FORWARD than marked  -> curve too wide  (raise ARC_TURN_FF_GAIN / lead)
+//   short of it                  -> curve too tight (lower ARC_TURN_FF_GAIN)
+struct CurveTestReport {
+    uint8_t  active, dir;               // dir: 1 right, 2 left
+    float    expectForwardMm, expectSideMm;
+    float    arcMaxLagDeg;              // worst heading lag in the curve (+ = going wide)
+    float    arcEndErrDeg;              // heading error as the curve ended (+ = under-turned)
+    float    headingErrStopDeg;         // heading error after stopping
+    float    peakTurnPwm;               // largest turn PWM in the curve (3000 = capped)
+    uint32_t arcMs, runs;
+    uint8_t  pass;                      // heading lag < 5 deg and end error < 3 deg
+};
+extern volatile CurveTestReport curveTest;
+void Test_Curve_Init();
+void Test_Curve_Update();
 
 // TEST_DRIVE_CELLS  ->  cellTest    PA6 short: N cells forward, PA5 short: back
 struct CellTestReport {

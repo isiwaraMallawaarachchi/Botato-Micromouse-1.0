@@ -35,7 +35,7 @@
 class Navigator {
 public:
     enum State  : uint8_t { IDLE, SEARCH, RETURN, SPEED, DONE, STUCK };
-    enum Phase  : uint8_t { DRIVE, SETTLE, TURN, PARK, FINISHED };
+    enum Phase  : uint8_t { DRIVE, SETTLE, TURN, PARK, FINISHED, ARC };
     enum Action : uint8_t { ACT_STRAIGHT, ACT_LEFT, ACT_RIGHT, ACT_AROUND,
                             ACT_GOAL, ACT_HOME, ACT_PARKED, ACT_STUCK };
 
@@ -51,6 +51,10 @@ public:
     bool     running()   const { return phase_ != FINISHED; }
     bool     ended()     const { return state_ == DONE || state_ == STUCK; }
     bool     mapReady()  const { return mapReady_; }
+
+    // Curved turns on known-path runs (speed run and its drive home).
+    void     setCurves(bool on)    { curves_ = on; }
+    bool     curves()    const     { return curves_; }
     uint32_t decisions() const { return decisions_; }
 
     // Live Expressions: robot.navigator_.tel
@@ -66,6 +70,7 @@ public:
         float    remainingMm, speedCmd, wallErrMm, wallTrimDeg;
         uint32_t decisions;
         uint32_t stallStops;                // stops completed by the stall guard
+        uint32_t arcs;                      // curved turns taken
         int32_t  straightAhead;             // speed run: straight cells ahead
     } tel = {};
 
@@ -95,6 +100,11 @@ private:
     bool     otherSide_     = false;        // maze is on the other side of the start
     bool     returnKnown_   = false;        // return on explored cells only
     bool     selfParked_    = false;        // robot parked itself PARK_GAP_MM off the wall
+    bool     curves_        = cfg::CURVED_TURNS_DEFAULT;
+    bool     arcPending_    = false;        // a curve starts in this cell
+    float    arcStartMm_    = 0.0f;         // traveled when the current curve began
+    float    arcLenMm_      = 0.0f;         // curve length (encoder mm), set in init()
+    bool     eventArc_      = false;        // next non-straight cell is a curve
     int      startX_        = 0;
     uint32_t decisions_     = 0;
     uint32_t settleStartMs_ = 0;
@@ -122,6 +132,15 @@ private:
     void   updateDrive();
     void   updateSettle();
     void   updateTurn();
+    void   updateArc();
+    void   startArc(float traveled);
+    float  frontArcReferenced(float traveled, float remaining);
+    bool   knownRun() const { return state_ == SPEED || returnKnown_; }
+    bool   arcsOn()   const { return curves_ && knownRun(); }
+    static float arcRadiusMm() { return 0.5f * cfg::CELL_TRAVEL_MM; }
+    // Where the curve starts, as encoder mm before the turn cell's centre.
+    static float arcStartMm()  { return arcRadiusMm() +
+                                  navcfg::ARC_START_ADVANCE_MM * (cfg::CELL_TRAVEL_MM / cfg::CELL_PITCH_MM); }
     void   updatePark();
     void   senseWalls();
     bool   boundaryOpen(Dir side, int sensor) const;

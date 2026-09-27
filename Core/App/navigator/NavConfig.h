@@ -69,7 +69,12 @@ constexpr float OUTER_OPEN_MM = 200.0f;
 constexpr float FRONT_REF_MAX_MM  = 120.0f;   // only trust the front wall this close
 static_assert(FRONT_REF_MAX_MM > FRONT_WALL_EXPECTED_MM + 20.0f,
               "FRONT_REF_MAX_MM must cover the front wall seen from the decision point");
-constexpr float FRONT_LATENCY_S   = 0.030f;   // sensor + filter lag, compensated
+// Delay of the front-ToF distance behind the real distance while moving,
+// from the pipeline in tof/ToFConfig.h: half a 20 ms measurement + one sample
+// for the median-of-3 + one EMA lag (alpha 0.6) ~= 47 ms. Compensated as
+// speed * delay. Raise it if fast stops end too close to the wall, lower it
+// if they stop short (see the tuning notes).
+constexpr float FRONT_LATENCY_S   = 0.047f;
 
 /* ---- Braking -------------------------------------------------------------
  * Braking follows v = sqrt(2 * decel * remaining), so the robot arrives at the
@@ -106,6 +111,32 @@ static_assert(cfg::SEARCH_SPEED_MMPS * cfg::SEARCH_SPEED_MMPS
               <= 2.0f * BRAKE_DECEL_MMPS2 * (SENSE_LOOKAHEAD_MM - CREEP_ZONE_MM),
               "SEARCH_SPEED_MMPS too high to brake within SENSE_LOOKAHEAD_MM: "
               "lower the speed or raise DECEL_MMPS2 in Config.h");
+
+/* ---- Curved turns (speed run and its drive home) ------------------------
+ * A curve starts half a driven cell (CELL_TRAVEL_MM / 2) before the turn
+ * cell's centre and ends half a cell after it on the new corridor, centred on
+ * the inside corner post. Checked for this robot (81.5 wide): >= 37 mm from
+ * the outside walls and >= 49 mm from the inside post all the way round.
+ * On known-path runs the next move is decided this much before that point,
+ * so the robot knows in time to start a curve.                              */
+constexpr float ARC_DECIDE_MARGIN_MM = 20.0f;
+
+// >>> CURVE START TIMING (tune in the maze, after TEST_CURVE) <<<
+// Real mm by which every curve starts EARLIER than the geometric start point
+// (half a cell before the turn cell's centre). Use it if curves start late
+// (robot runs deep into the corner, exits on the outside of the new
+// corridor); negative if they start early (exits on the inside).
+constexpr float ARC_START_ADVANCE_MM = 0.0f;
+static_assert(ARC_START_ADVANCE_MM > -40.0f && ARC_START_ADVANCE_MM < 60.0f,
+              "ARC_START_ADVANCE_MM out of range: expected a few mm to a few tens of mm");
+// Approaching a curve whose cell has a known front wall, the front ToF sets
+// where the curve starts (from the moment the curve is decided until it
+// begins), so encoder drift cannot shift it. Readings further than
+// ARC_FRONT_REF_MAX_MM are not used, nor any that disagree with the encoders
+// by more than ARC_FRONT_REF_GATE_MM (a post or an angled view, not the wall).
+constexpr float ARC_FRONT_REF_MAX_MM  = 300.0f;
+constexpr float ARC_FRONT_REF_GATE_MM = 60.0f;
+static_assert(cfg::CURVE_SPEED_MMPS > 0.0f, "CURVE_SPEED_MMPS must be positive");
 
 /* ---- Lateral wall centring ------------------------------------------------
  * Trims the heading setpoint (DECISIONS.md #28), never the rate.           */

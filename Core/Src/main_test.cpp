@@ -35,6 +35,7 @@
  *   TEST_HEADING_HOLD    holdTest     holds by itself once calibrated; twist by hand
  *   TEST_TURN            turnTest     on the floor, room to pivot
  *   TEST_DRIVE_CELLS     cellTest     straight clear floor; PA5 drives back
+ *   TEST_CURVE           curveTest    open floor, taped start; PA6 right, PA5 left
  *   TEST_NAV             navTest      in the maze, same as competition
  * ========================================================================= */
 //#define TEST_I2C_GYRO
@@ -49,12 +50,14 @@
 //#define TEST_HEADING_HOLD
 //#define TEST_TURN
 //#define TEST_DRIVE_CELLS
+//#define TEST_CURVE
 //#define TEST_NAV
 
 #if (defined(TEST_I2C_GYRO) + defined(TEST_I2C_TOF) + defined(TEST_TOF_SINGLE) + \
      defined(TEST_TOF_LIVE) + defined(TEST_TOF_CAL) + defined(TEST_GYRO) +        \
      defined(TEST_ENCODER) + defined(TEST_BUTTONS) + defined(TEST_MOTOR) +        \
      defined(TEST_HEADING_HOLD) + defined(TEST_TURN) + defined(TEST_DRIVE_CELLS) + \
+     defined(TEST_CURVE) + \
      defined(TEST_NAV)) != 1
 #error "main_test.cpp: enable exactly one TEST_* define"
 #endif
@@ -95,6 +98,9 @@
 #elif defined(TEST_DRIVE_CELLS)
   #define TEST_INIT   Test_DriveCells_Init
   #define TEST_UPDATE Test_DriveCells_Update
+#elif defined(TEST_CURVE)
+  #define TEST_INIT   Test_Curve_Init
+  #define TEST_UPDATE Test_Curve_Update
 #elif defined(TEST_NAV)
   #define TEST_INIT   Test_Nav_Init
   #define TEST_UPDATE Test_Nav_Update

@@ -28,6 +28,11 @@ constexpr uint32_t MOTOR_PHASE_MS = 1500;
 constexpr int      TURN_CYCLES   = 3;
 constexpr uint32_t TURN_PAUSE_MS = 400;
 
+/* TEST_CURVE — straight lead-in, one curve at CURVE_SPEED_MMPS, lead-out, stop.
+ * Real mm (converted to the robot's cell length internally). */
+constexpr float CURVE_LEAD_IN_MM  = 300.0f;
+constexpr float CURVE_LEAD_OUT_MM = 300.0f;
+
 /* TEST_DRIVE_CELLS — straight run length and cruise speed. */
 constexpr int   DRIVE_CELLS      = 15;
 constexpr float DRIVE_SPEED_MMPS = cfg::SEARCH_SPEED_MMPS;

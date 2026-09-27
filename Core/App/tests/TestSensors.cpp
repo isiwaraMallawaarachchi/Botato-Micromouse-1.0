@@ -247,6 +247,7 @@ void Test_Buttons_Update() {
     if (b.takeFastShort())   { ++r.fastShort;   r.lastEvent = 2; robot.led().pulse(); }
     if (b.takeSearchLong())  { ++r.searchLong;  r.lastEvent = 3; robot.led().pulse(); }
     if (b.takeBothPress())   { ++r.both;        r.lastEvent = 4; robot.led().pulse(); }
+    if (b.takeFastLong())    { ++r.fastLong;    r.lastEvent = 5; robot.led().pulse(); }
     r.searchHeld = b.searchHeld();
     r.fastHeld   = b.fastHeld();
 }

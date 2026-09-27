@@ -24,6 +24,11 @@
  *
  * setRate() is a raw mode for tuning the rate loop in tests; it bypasses the
  * heading loop until the next turnBy()/holdHeading().
+ *
+ * arcTurn(): curved turn while driving. The heading reference follows
+ * ArcShape as a function of DISTANCE travelled (encoders), so the curve keeps
+ * its shape whatever the actual speed. The planned turn rate is fed forward
+ * both to the heading loop (deg/s) and to the motors (ARC_RATE_FF, PWM).
  */
 class ControlLoop {
 public:
@@ -42,6 +47,9 @@ public:
 
     bool turnDone() const;
 
+    void arcTurn(float deltaDeg, float lengthMm);   // curved turn, forward speed unchanged
+    bool arcActive() const { return arcActive_; }
+
     // ---- 1kHz ISR ----
     void tick();
 
@@ -56,6 +64,9 @@ public:
     float rateRef()      const { return heading_.vel(); }
     float headingErr()   const { return headingErr_; }
     float trimDeg()      const { return trim_; }
+    float arcRateFfDps() const { return arcFfDps_; }
+    float arcMaxLagDeg() const { return arcMaxLagDeg_; }   // worst heading lag in the last curve
+    float arcEndErrDeg() const { return arcEndErrDeg_; }   // heading error when it ended
 
 private:
     Gyro*              gyro_  = nullptr;
@@ -69,6 +80,17 @@ private:
     float    rawRateCmd_ = 0.0f;
     float    trim_       = 0.0f;
     uint32_t turnTicks_  = 0;
+
+    // Curved turn state (written under CriticalSection, run in the ISR).
+    volatile bool arcActive_ = false;
+    float arcStartDeg_ = 0.0f;   // heading at the start of the curve
+    float arcDeltaDeg_ = 0.0f;   // +90 left, -90 right
+    float arcLenMm_    = 0.0f;   // curve length along the axle path
+    float arcS0Mm_     = 0.0f;   // axle distance when the curve started
+    float arcFfDps_    = 0.0f;   // planned turn rate right now
+    float arcFfPwmDps_ = 0.0f;   // rate the motors are driven for (gain, lead applied)
+    float arcMaxLagDeg_ = 0.0f;  // diagnostics: + = heading behind the plan (curve going wide)
+    float arcEndErrDeg_ = 0.0f;
 
     SpeedRamp    ramp_;
     AngleProfile heading_;
