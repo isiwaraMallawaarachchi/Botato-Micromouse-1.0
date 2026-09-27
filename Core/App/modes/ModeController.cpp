@@ -47,14 +47,22 @@ void ModeController::enterIdle() {
     led_->set(Indicator::OFF);
 }
 
+namespace { constexpr int NO_MAP_CODE = 5; constexpr uint32_t NO_MAP_SHOW_MS = 3000; }
+
 void ModeController::startRun(State s) {
     if (s == SPEED_RUN) {
-        if (!nav_->startSpeed()) return;   // no search map yet: stay idle
+        if (!nav_->startSpeed()) {          // no search has reached the goal yet
+            ++speedRefused_;
+            led_->code(NO_MAP_CODE);        // tell the user instead of doing nothing
+            refusedUntil_ = HAL_GetTick() + NO_MAP_SHOW_MS;
+            return;
+        }
     } else {
         nav_->startSearch();
     }
     seenDecisions_ = nav_->decisions();
     state_ = s;
+    refusedUntil_ = 0;
     led_->set(Indicator::OFF);
 }
 
@@ -92,6 +100,10 @@ void ModeController::update() {
     }
 
     case IDLE:
+        if (refusedUntil_ && static_cast<int32_t>(HAL_GetTick() - refusedUntil_) >= 0) {
+            refusedUntil_ = 0;
+            led_->set(Indicator::OFF);      // end of the 5-flash "no map" notice
+        }
         if (btn_->takeSearchLong())  { calibrate();          return; }
         if (btn_->takeSearchShort()) { startRun(SEARCH_RUN); return; }
         if (btn_->takeFastShort())   { startRun(SPEED_RUN);  return; }
@@ -107,7 +119,14 @@ void ModeController::update() {
             seenDecisions_ = nav_->decisions();
             led_->pulse();
         }
-        if (nav_->ended()) enterIdle();
+        if (nav_->ended()) {
+            const bool ok = (nav_->state() == Navigator::DONE);
+            enterIdle();
+            if (ok) {                                   // visible "finished"
+                led_->set(Indicator::PASS);
+                refusedUntil_ = HAL_GetTick() + NO_MAP_SHOW_MS;   // reuse the 3s timer
+            }
+        }
         break;
 
     case FAULT:

@@ -88,7 +88,7 @@ constexpr float CELL_PITCH_MM     = CORRIDOR_MM + WALL_THICKNESS_MM;      // 192
  * TEST_DRIVE_CELLS drives DRIVE_CELLS times the adjusted distance, so rerun it
  * afterwards: the tape should then read DRIVE_CELLS x 192.
  * =========================================================================== */
-constexpr float CELL_TRAVEL_ADJUST_MM = 3.0f;
+constexpr float CELL_TRAVEL_ADJUST_MM = 5.0f;
 
 constexpr float CELL_TRAVEL_MM    = CELL_PITCH_MM + CELL_TRAVEL_ADJUST_MM;   // do not edit
 
@@ -103,10 +103,10 @@ constexpr int   PWM_MAX           = 4999;     // TIM1 ARR
  * Forward speed never jumps: it ramps up at ACCEL and down at DECEL. Turns
  * follow the same shape — rate ramps up at TURN_ACCEL to TURN_RATE, then ramps
  * down so the robot arrives on the target angle at zero rate.              */
-constexpr float SEARCH_SPEED_MMPS = 300.0f;
-constexpr float SPEED_RUN_MMPS    = 525.0f;   // keep well under FREE_RUN_MMPS
+constexpr float SEARCH_SPEED_MMPS = 350.0f;
+constexpr float SPEED_RUN_MMPS    = 625.0f;   // keep well under FREE_RUN_MMPS
 constexpr float ACCEL_MMPS2       = 1500.0f;
-constexpr float DECEL_MMPS2       = 2500.0f;
+constexpr float DECEL_MMPS2       = 3500.0f;
 constexpr float TURN_RATE_DPS     = 240.0f;
 constexpr float TURN_ACCEL_DPS2   = 1200.0f;
 

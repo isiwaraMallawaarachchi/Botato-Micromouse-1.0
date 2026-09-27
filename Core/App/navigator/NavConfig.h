@@ -82,6 +82,18 @@ constexpr float    STOP_TOL_MM       = 1.0f;
 constexpr float    SETTLE_MMPS       = 15.0f;
 constexpr uint32_t SETTLE_TIMEOUT_MS = 400;
 constexpr float    PARK_SPEED_MMPS   = 150.0f;
+
+// Stall guard. The last millimetres of every stop run at CREEP_MMPS; under load
+// a small gear motor can stop turning there (static friction, a tail touching
+// the wall). Without a guard the robot waits forever for the last 1mm — and a
+// search that never finishes parking never marks itself done. No progress of
+// STALL_PROGRESS_MM for STALL_MS counts as arrived:
+//   stops:   only within STALL_ARRIVE_MM of the stop point
+//   parking: anywhere (it is backing towards a wall), plus a hard time limit
+constexpr uint32_t STALL_MS          = 300;
+constexpr float    STALL_PROGRESS_MM = 0.5f;
+constexpr float    STALL_ARRIVE_MM   = 10.0f;
+constexpr uint32_t PARK_TIMEOUT_MS   = 4000;
 // Parking stops this short of the back wall. Reversing lands within ~3mm and
 // the robot can sit ~0.5 deg off square, which swings a tail corner ~0.4mm:
 // 8mm keeps clear contact-free. The next run starting from this parked pose
@@ -118,7 +130,7 @@ constexpr float WC_BAND_MM         = 25.0f;
 constexpr float WC_JUMP_MM         = 10.0f;
 constexpr float WC_GAIN_BOTH_WALLS = 1.00f;
 constexpr float WC_GAIN_ONE_WALL   = 0.75f;
-constexpr ctrlcfg::Gains WALL_PID  = { 0.55f, 0.004f, 0.25f, 600.0f };    // mm -> deg
+constexpr ctrlcfg::Gains WALL_PID  = { 0.75f, 0.004f, 0.55f, 600.0f };    // mm -> deg
 
 } // namespace navcfg
 

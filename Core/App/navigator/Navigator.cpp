@@ -110,7 +110,9 @@ void Navigator::updateDrive() {
 
     // Decision point: side sensors are now over the target cell's centre.
     if (!decided_ && remaining <= navcfg::SENSE_LOOKAHEAD_MM) {
-        if (state_ != SPEED) senseWalls();     // speed run trusts the map
+        // Speed run and its return trust the map: no sensing, so a glitch can
+        // never add a false wall to the map the next speed run relies on.
+        if (state_ != SPEED && !returnKnown_) senseWalls();
         pending_ = decide();
         ++decisions_;
         tel.lastAction = pending_;
@@ -121,6 +123,7 @@ void Navigator::updateDrive() {
             Planner::stepForward(pose_);
         } else {
             decided_ = braking_ = true;
+            stallSinceMs_ = 0;
         }
     }
 
@@ -129,6 +132,11 @@ void Navigator::updateDrive() {
         v = approachSpeed(remaining, cruise_, navcfg::BRAKE_DECEL_MMPS2,
                           navcfg::CREEP_MMPS, navcfg::CREEP_ZONE_MM,
                           navcfg::STOP_TOL_MM);
+        // Stalled in the last few mm: close enough, carry on instead of hanging.
+        if (v != 0.0f && remaining < navcfg::STALL_ARRIVE_MM && stalled(remaining)) {
+            ++tel.stallStops;
+            v = 0.0f;
+        }
         if (v == 0.0f) {
             stopThen(pending_);
             publish(remaining, 0.0f);
@@ -136,9 +144,9 @@ void Navigator::updateDrive() {
         }
     } else {
         v = cruise_;
-        // Speed run: the map says how far the straight goes, so accelerate
-        // along it and start braking early enough for the turn at its end.
-        if (state_ == SPEED) {
+        // Speed run (and the return after it): the map says how far the
+        // straight goes, so accelerate along it and brake early for the turn.
+        if (state_ == SPEED || returnKnown_) {
             const float stopDist = remaining + straightAheadMm() - navcfg::CREEP_ZONE_MM;
             const float vBrake = std::sqrt(2.0f * navcfg::BRAKE_DECEL_MMPS2 *
                                            (stopDist > 0.0f ? stopDist : 0.0f));
@@ -153,11 +161,24 @@ void Navigator::updateDrive() {
 
 // Stop on the centre, wait for the robot to actually be still, then act.
 void Navigator::stopThen(Action a) {
+    stallSinceMs_ = 0;
     ctrl_->setForwardSpeed(0.0f);
     ctrl_->setHeadingTrim(0.0f);
     pending_       = a;
     settleStartMs_ = HAL_GetTick();
     phase_         = SETTLE;
+}
+
+// True once the robot has made no real progress towards its stop point for
+// STALL_MS. The window restarts whenever it gains STALL_PROGRESS_MM.
+bool Navigator::stalled(float remaining) {
+    const uint32_t now = HAL_GetTick();
+    if (stallSinceMs_ == 0 || (stallRefMm_ - remaining) > navcfg::STALL_PROGRESS_MM) {
+        stallRefMm_   = remaining;
+        stallSinceMs_ = now;
+        return false;
+    }
+    return (now - stallSinceMs_) > navcfg::STALL_MS;
 }
 
 void Navigator::updateSettle() {
@@ -272,9 +293,15 @@ void Navigator::act(Action a) {
         // Stopped in the goal. Both runs drive home: a lifted robot costs
         // +20s (rule 2.4.6.2). After a speed run the map is complete enough,
         // so go home on explored cells only; after a search keep exploring.
+        // A search that reaches the goal has driven and mapped a full path
+        // start->goal: the map is ready for a speed run NOW, even if the robot
+        // is then lifted out (the +20s reset) or its drive home is stopped.
+        if (state_ == SEARCH) mapReady_ = true;
         returnKnown_ = (state_ == SPEED);
         state_   = RETURN;
-        cruise_  = cfg::SEARCH_SPEED_MMPS;
+        // After a speed run the way home is known: go back at speed-run pace
+        // (saves maze time; only the run TO the goal is scored).
+        cruise_  = returnKnown_ ? cfg::SPEED_RUN_MMPS : cfg::SEARCH_SPEED_MMPS;
         pending_ = decide();
         ++decisions_;
         tel.lastAction = pending_;
@@ -302,6 +329,8 @@ void Navigator::updateTurn() {
     Planner::applyTurn(pose_, turn_);
     if (homing_) {
         parkEndMm_ = traveledMm() - (navcfg::START_OFFSET_MM - navcfg::PARK_GAP_MM);
+        parkStartMs_ = HAL_GetTick();
+        stallSinceMs_ = 0;
         phase_ = PARK;
     } else {
         nextCell();
@@ -325,6 +354,8 @@ void Navigator::startHoming() {
     const Turn t = Planner::turnFor(pose_.facing, NORTH);
     if (t == TURN_NONE) {
         parkEndMm_ = traveledMm() - (navcfg::START_OFFSET_MM - navcfg::PARK_GAP_MM);
+        parkStartMs_ = HAL_GetTick();
+        stallSinceMs_ = 0;
         phase_ = PARK;
     } else {
         startTurn(t);
@@ -337,7 +368,11 @@ void Navigator::updatePark() {
                                   navcfg::BRAKE_DECEL_MMPS2,
                                   navcfg::CREEP_MMPS, navcfg::CREEP_ZONE_MM,
                           navcfg::STOP_TOL_MM);
-    if (v == 0.0f) { stopThen(ACT_PARKED); return; }
+    // Parking backs towards a wall: stopping early (friction, tail touching)
+    // is fine, waiting forever is not — it would leave the run unfinished.
+    const bool timedOut = (HAL_GetTick() - parkStartMs_) > navcfg::PARK_TIMEOUT_MS;
+    if (v != 0.0f && (stalled(remaining) || timedOut)) ++tel.stallStops;
+    if (v == 0.0f || stalled(remaining) || timedOut) { stopThen(ACT_PARKED); return; }
     ctrl_->setForwardSpeed(-v);
     ctrl_->setHeadingTrim(0.0f);
     publish(remaining, -v);

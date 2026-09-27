@@ -23,6 +23,12 @@
  *   3  GYRO_LOST        answered at boot, then stopped (connector, 3V3 dip)
  *   4  NO_CONTROL_TICK  the 1kHz TIM3 interrupt is not running
  * PA6 long press in FAULT re-initialises the gyro and tries again.
+ *
+ * PA5 with no map yet (no search has reached the goal) does not start a
+ * speed run: the LED shows 5 flashes for 3s instead, and speedRefused_ counts.
+ *
+ * A run that finishes (home and parked) shows a double flash for 3s, so
+ * "finished" never looks the same as "still running" (LED off in both).
  */
 class ModeController {
 public:
@@ -47,6 +53,8 @@ private:
     Fault    fault_        = NONE;
     uint32_t seenDecisions_ = 0;
     uint32_t calStartMs_   = 0;
+    uint32_t refusedUntil_ = 0;     // 5-flash "no map" notice, until this time
+    uint32_t speedRefused_ = 0;     // Live Expression: PA5 presses refused
 
     void calibrate();
     void enterFault(Fault f);

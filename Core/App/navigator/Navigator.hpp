@@ -42,7 +42,7 @@ public:
     void init(ControlLoop* ctrl, WallSensorArray* walls, Encoder* encL, Encoder* encR);
 
     void startSearch();
-    bool startSpeed();            // false if no completed search map exists
+    bool startSpeed();            // false if no search has reached the goal yet
     void abort();
     void clearMap();
     void update();                // main loop
@@ -65,6 +65,7 @@ public:
         uint8_t  otherSide;                 // 1 = maze found on the other side of the start
         float    remainingMm, speedCmd, wallErrMm, wallTrimDeg;
         uint32_t decisions;
+        uint32_t stallStops;                // stops completed by the stall guard
         int32_t  straightAhead;             // speed run: straight cells ahead
     } tel = {};
 
@@ -97,6 +98,9 @@ private:
     int      startX_        = 0;
     uint32_t decisions_     = 0;
     uint32_t settleStartMs_ = 0;
+    uint32_t parkStartMs_   = 0;
+    float    stallRefMm_    = 0.0f;    // stall guard: remaining at window start
+    uint32_t stallSinceMs_  = 0;       // 0 = window not started
 
     int straightCache_ = 0;
     int cacheKey_      = -1;
@@ -128,6 +132,7 @@ private:
     void   nextCell();
     void   startHoming();
     void   stopThen(Action a);
+    bool   stalled(float remaining);
     void   finish(State s);
     float  frontReferenced(float traveled, float remaining);
     float  straightAheadMm();
